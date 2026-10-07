@@ -1,0 +1,109 @@
+{
+  "name": "sqlstudio",
+  "version": "0.1.0",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "desktop": "npm run build:electron && node scripts/dev.mjs --desktop",
+    "build:electron": "tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs",
+    "build": "tsc --noEmit && vite build && npm run build:electron",
+    "test": "tsx --test tests/*.test.ts",
+    "check": "tsc --noEmit",
+    "pack:mac": "npm run build && electron-builder --mac",
+    "pack:win": "npm run build && electron-builder --win",
+    "preview": "vite preview",
+    "format": "prettier --write src server shared electron tests scripts docs README.md *.json vite.config.ts index.html"
+  },
+  "author": {
+    "name": "SQLStudio"
+  },
+  "license": "MIT",
+  "description": "A cross-platform database workspace for macOS and Windows",
+  "dependencies": {
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
+    "@uiw/react-codemirror": "^4.25.12",
+    "express": "^5.2.1",
+    "lucide-react": "^1.52.0",
+    "mongodb": "^7.7.0",
+    "mysql2": "^3.24.5",
+    "papaparse": "^5.7.0",
+    "pg": "^8.23.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "redis": "^6.3.0",
+    "sql.js": "^1.14.2",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.4",
+    "@types/papaparse": "^5.5.2",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/sql.js": "^1.4.11",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^44.6.0",
+    "electron-builder": "^26.15.3",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^6.4.4"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "build": {
+    "appId": "dev.sqlstudio.desktop",
+    "productName": "SQLStudio",
+    "icon": "public/app-icon.png",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "extraMetadata": {
+      "name": "sqlstudio"
+    }
+  },
+  "overrides": {
+    "app-builder-lib": {
+      "@electron/get": "^5.1.0"
+    }
+  }
+}

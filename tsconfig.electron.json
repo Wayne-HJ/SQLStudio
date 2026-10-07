@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist-electron",
+    "rootDir": ".",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "types": ["node"]
+  },
+  "include": [
+    "electron/main.ts",
+    "server/service.ts",
+    "server/store.ts",
+    "server/demo.ts",
+    "server/rpc.ts",
+    "shared/types.ts"
+  ]
+}
