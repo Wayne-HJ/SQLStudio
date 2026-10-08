@@ -23,10 +23,74 @@ import { EngineIcon } from "./ConnectionDialog";
 import type {
   Connection,
   DbObject,
-  SchemaComparison,
-  SyncPlan,
+  DatabaseScope,
+  DatabaseSchemaComparison,
+  DatabaseSyncPlan,
+  TablePair,
 } from "../../shared/types";
-const objectKey = (o: DbObject) => `${o.schema ?? ""}.${o.name}`;
+const objectKey = (o: DbObject) => JSON.stringify([o.schema ?? "", o.name]);
+const objectLabel = (o: DbObject) =>
+  `${o.schema ? o.schema + "." : ""}${o.name}`;
+function useDatabaseCatalog(
+  connection: Connection | undefined,
+  preferred = "",
+) {
+  const [catalog, setCatalog] = useState({
+    id: "",
+    names: [] as string[],
+    database: "",
+    loading: false,
+    error: "",
+  });
+  useEffect(() => {
+    let current = true;
+    if (!connection) return;
+    setCatalog({
+      id: connection.id,
+      names: [],
+      database: "",
+      loading: true,
+      error: "",
+    });
+    api
+      .connect(connection)
+      .then(() => api.databases(connection.id))
+      .then((result) => {
+        if (current)
+          setCatalog({
+            id: connection.id,
+            names: result.names,
+            database: result.names.includes(preferred)
+              ? preferred
+              : result.selected,
+            loading: false,
+            error: "",
+          });
+      })
+      .catch((error) => {
+        if (current)
+          setCatalog({
+            id: connection.id,
+            names: [],
+            database: "",
+            loading: false,
+            error: error.message,
+          });
+      });
+    return () => {
+      current = false;
+    };
+  }, [connection?.id, preferred]);
+  return {
+    ...catalog,
+    error: catalog.id === connection?.id ? catalog.error : "",
+    database: catalog.id === connection?.id ? catalog.database : "",
+    names: catalog.id === connection?.id ? catalog.names : [],
+    loading: !!connection && (catalog.id !== connection.id || catalog.loading),
+    select: (database: string) =>
+      setCatalog((previous) => ({ ...previous, database })),
+  };
+}
 function schemaDetail(detail: string): string {
   const labels = detail.endsWith("不同") ? detail.slice(0, -2).split("、") : [];
   if (
@@ -57,6 +121,7 @@ export default function CompareWorkspace({
   mode,
   connections,
   activeId,
+  activeDatabase,
   initialObject,
   onQuery,
   onRefresh,
@@ -64,8 +129,9 @@ export default function CompareWorkspace({
   mode: "structure" | "data";
   connections: Connection[];
   activeId: string;
+  activeDatabase: string;
   initialObject?: DbObject;
-  onQuery: (targetId: string, text: string) => void;
+  onQuery: (target: DatabaseScope, text: string) => void;
   onRefresh: () => void;
 }) {
   const relational = connections.filter((c) =>
@@ -77,127 +143,181 @@ export default function CompareWorkspace({
   const [targetId, setTargetId] = useState(
     relational.find((c) => c.id !== activeId)?.id ?? "",
   );
+  const source = relational.find((c) => c.id === sourceId),
+    target = relational.find((c) => c.id === targetId);
+  const sourceCatalog = useDatabaseCatalog(
+    source,
+    sourceId === activeId ? activeDatabase : "",
+  );
+  const targetCatalog = useDatabaseCatalog(target);
+  const sourceDatabase = sourceCatalog.database,
+    targetDatabase = targetCatalog.database;
   const [sourceObjects, setSourceObjects] = useState<DbObject[]>([]);
   const [targetObjects, setTargetObjects] = useState<DbObject[]>([]);
-  const [sourceName, setSourceName] = useState("");
-  const [targetName, setTargetName] = useState("");
-  const [targetNew, setTargetNew] = useState("");
-  const [schema, setSchema] = useState<SchemaComparison | null>(null);
-  const [plan, setPlan] = useState<SyncPlan | null>(null);
+  const [loadedScope, setLoadedScope] = useState("");
+  const [selectedNames, setSelectedNames] = useState<string[]>([]);
+  const [mappings, setMappings] = useState<Record<string, string>>({});
+  const [newNames, setNewNames] = useState<Record<string, string>>({});
+  const [search, setSearch] = useState("");
+  const [schemas, setSchemas] = useState<DatabaseSchemaComparison | null>(null);
+  const [batch, setBatch] = useState<DatabaseSyncPlan | null>(null);
+  const [resultTable, setResultTable] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [deleteExtra, setDeleteExtra] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [applied, setApplied] = useState("");
   const [detail, setDetail] = useState(0);
-  const source = relational.find((c) => c.id === sourceId),
-    target = relational.find((c) => c.id === targetId);
-  const sourceObject = sourceObjects.find((o) => objectKey(o) === sourceName),
-    targetObject =
-      targetObjects.find((o) => objectKey(o) === targetName) ??
-      (targetNew
-        ? {
-            name: targetNew,
-            type: "table" as const,
-            schema: target?.engine === "postgres" ? "public" : undefined,
-          }
-        : undefined);
+  const scopeKey = JSON.stringify([
+    sourceId,
+    sourceDatabase,
+    targetId,
+    targetDatabase,
+    mode,
+  ]);
+  const tablesReady =
+    !!sourceDatabase && !!targetDatabase && loadedScope === scopeKey;
+  const loading =
+    sourceCatalog.loading ||
+    targetCatalog.loading ||
+    (!!sourceDatabase && !!targetDatabase && !tablesReady);
+  const sourceScope: DatabaseScope = {
+    connectionId: sourceId,
+    database: sourceDatabase,
+  };
+  const targetScope: DatabaseScope = {
+    connectionId: targetId,
+    database: targetDatabase,
+  };
+  const schema = schemas?.tables[resultTable],
+    plan = batch?.tables[resultTable];
+  const pairs: TablePair[] = sourceObjects
+    .filter((o) => selectedNames.includes(objectKey(o)))
+    .map((o) => ({
+      source: o,
+      target: targetObjects.find(
+        (item) => objectKey(item) === mappings[objectKey(o)],
+      ) ?? {
+        name: newNames[objectKey(o)] ?? o.name,
+        type: "table",
+        schema:
+          target?.engine === "mysql"
+            ? targetDatabase
+            : target?.engine === "postgres"
+              ? source?.engine === "postgres"
+                ? o.schema
+                : "public"
+              : undefined,
+      },
+    }));
+  const missingTargets =
+    mode === "data" &&
+    selectedNames.some(
+      (key) => !targetObjects.some((o) => objectKey(o) === mappings[key]),
+    );
+  const visibleTables = sourceObjects.filter((o) =>
+    objectLabel(o).toLowerCase().includes(search.toLowerCase()),
+  );
   useEffect(() => {
     let current = true;
     setSourceObjects([]);
-    setSourceName("");
-    if (source)
-      api
-        .connect(source)
-        .then(() => api.objects(source.id))
-        .then((list) => {
-          if (current) {
-            const tables = list.filter((o) => o.type === "table");
-            setSourceObjects(tables);
-            setSourceName(
-              objectKey(
-                tables.find(
-                  (o) =>
-                    o.name === initialObject?.name &&
-                    o.schema === initialObject.schema,
-                ) ??
-                  tables.find((o) => o.name === "customers") ??
-                  tables[0] ?? { name: "", type: "table" },
-              ),
-            );
-          }
-        })
-        .catch((e) => {
-          if (current) setError(e.message);
-        });
-    return () => {
-      current = false;
-    };
-  }, [sourceId, initialObject?.name, initialObject?.schema]);
-  useEffect(() => {
-    let current = true;
     setTargetObjects([]);
-    setTargetName("");
-    if (target)
-      api
-        .connect(target)
-        .then(() => api.objects(target.id))
-        .then((list) => {
-          if (current) {
-            const tables = list.filter((o) => o.type === "table");
-            setTargetObjects(tables);
-            setTargetName(
-              objectKey(
-                tables.find((o) => o.name === sourceObject?.name) ??
-                  tables.find((o) => o.name === "customers") ??
-                  tables[0] ?? { name: "", type: "table" },
-              ),
-            );
-          }
-        })
-        .catch((e) => {
-          if (current) setError(e.message);
-        });
+    setLoadedScope("");
+    setSelectedNames([]);
+    setMappings({});
+    setNewNames({});
+    setSearch("");
+    if (!sourceDatabase || !targetDatabase) return;
+    Promise.all([
+      api.databaseObjects(sourceScope),
+      api.databaseObjects(targetScope),
+    ])
+      .then(([from, to]) => {
+        if (!current) return;
+        const sources = from.filter((o) => o.type === "table"),
+          targets = to.filter((o) => o.type === "table");
+        setSourceObjects(sources);
+        setTargetObjects(targets);
+        setSelectedNames(
+          initialObject &&
+            sourceId === activeId &&
+            sourceDatabase === activeDatabase
+            ? sources
+                .filter(
+                  (o) =>
+                    o.name === initialObject.name &&
+                    o.schema === initialObject.schema,
+                )
+                .map(objectKey)
+            : sources.map(objectKey),
+        );
+        const matches: Record<string, string> = {};
+        for (const o of sources) {
+          const candidates = targets.filter((item) => item.name === o.name);
+          const match =
+            candidates.find(
+              (item) =>
+                source?.engine === "postgres" &&
+                target?.engine === "postgres" &&
+                item.schema === o.schema,
+            ) ?? (candidates.length === 1 ? candidates[0] : undefined);
+          matches[objectKey(o)] = match ? objectKey(match) : "";
+        }
+        setMappings(matches);
+        setLoadedScope(scopeKey);
+        onRefresh();
+      })
+      .catch((e) => {
+        if (current) {
+          setError(e.message);
+          setLoadedScope(scopeKey);
+        }
+      });
     return () => {
       current = false;
     };
-  }, [targetId]);
+  }, [scopeKey, initialObject?.name, initialObject?.schema]);
   useEffect(() => {
-    setSchema(null);
-    setPlan(null);
+    setSchemas(null);
+    setBatch(null);
     setApplied("");
     setError("");
     setConfirm(false);
     setDeleteExtra(false);
-  }, [sourceId, targetId, sourceName, targetName, targetNew, mode]);
+    setResultTable(0);
+    setDetail(0);
+  }, [scopeKey, selectedNames, mappings, newNames]);
   async function compare() {
-    if (!sourceObject || !targetObject) {
+    if (!tablesReady || !pairs.length) {
+      setError(t("请先选择源数据库、目标数据库和数据表。"));
+      return;
+    }
+    if (missingTargets) {
       setError(
-        t("请选择源表和目标表。目标连接不存在时，请先使用顶部“连接”添加。"),
+        t("部分目标表不存在，请先完成结构比对并创建目标表，或取消选择这些表。"),
       );
+      return;
+    }
+    if (pairs.some((pair) => !pair.target.name.trim())) {
+      setError(t("请填写目标表名称"));
       return;
     }
     setBusy(true);
     setError("");
     setApplied("");
-    setSchema(null);
-    setPlan(null);
+    setSchemas(null);
+    setBatch(null);
+    setResultTable(0);
+    setDetail(0);
     try {
       if (mode === "structure")
-        setSchema(
-          await api.compareSchemas(
-            sourceId,
-            targetId,
-            sourceObject,
-            targetObject,
-          ),
+        setSchemas(
+          await api.compareDatabaseSchemas(sourceScope, targetScope, pairs),
         );
-      else {
-        setPlan(
-          await api.compareData(sourceId, targetId, sourceObject, targetObject),
+      else
+        setBatch(
+          await api.compareDatabaseData(sourceScope, targetScope, pairs),
         );
-        setDetail(0);
-      }
       onRefresh();
     } catch (e) {
       setError((e as Error).message);
@@ -206,11 +326,11 @@ export default function CompareWorkspace({
     }
   }
   async function apply() {
-    if (!plan) return;
+    if (!batch) return;
     setBusy(true);
     setError("");
     try {
-      const result = await api.applySync(plan.id, deleteExtra);
+      const result = await api.applyDatabaseSync(batch.id, deleteExtra);
       setApplied(
         t("同步完成：新增 {0} 条、更新 {1} 条、删除 {2} 条。", [
           result.inserted,
@@ -219,7 +339,7 @@ export default function CompareWorkspace({
         ]),
       );
       setConfirm(false);
-      setPlan(null);
+      setBatch(null);
       onRefresh();
     } catch (e) {
       setError((e as Error).message);
@@ -228,10 +348,11 @@ export default function CompareWorkspace({
       setBusy(false);
     }
   }
+  const changes = batch?.tables.flatMap((table) => table.changes) ?? [];
   const counts = {
-    insert: plan?.changes.filter((c) => c.kind === "insert").length ?? 0,
-    update: plan?.changes.filter((c) => c.kind === "update").length ?? 0,
-    delete: plan?.changes.filter((c) => c.kind === "delete").length ?? 0,
+    insert: changes.filter((c) => c.kind === "insert").length,
+    update: changes.filter((c) => c.kind === "update").length,
+    delete: changes.filter((c) => c.kind === "delete").length,
   };
   const change = plan?.changes[detail];
   return (
@@ -251,7 +372,7 @@ export default function CompareWorkspace({
         <button
           className="button primary"
           onClick={() => void compare()}
-          disabled={busy || !sourceId || !targetId}
+          disabled={busy || loading || !tablesReady || !selectedNames.length}
         >
           {busy ? <Loader2 size={14} className="spin" /> : <Play size={13} />}
           {t("开始比对")}
@@ -266,24 +387,25 @@ export default function CompareWorkspace({
           <select
             aria-label={t("源数据库连接")}
             value={sourceId}
+            disabled={busy}
             onChange={(e) => setSourceId(e.target.value)}
           >
             {relational.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name} · {c.database}
+                {c.name}
               </option>
             ))}
           </select>
           <select
-            aria-label={t("源表")}
-            value={sourceName}
-            onChange={(e) => setSourceName(e.target.value)}
+            aria-label={t("选择源数据库")}
+            value={sourceDatabase}
+            disabled={busy || sourceCatalog.loading}
+            onChange={(e) => sourceCatalog.select(e.target.value)}
           >
-            <option value="">{t("选择源表")}</option>
-            {sourceObjects.map((o) => (
-              <option key={objectKey(o)} value={objectKey(o)}>
-                {o.schema ? o.schema + "." : ""}
-                {o.name}
+            <option value="">{t("请选择数据库")}</option>
+            {sourceCatalog.names.map((name) => (
+              <option key={name} value={name}>
+                {name}
               </option>
             ))}
           </select>
@@ -300,44 +422,172 @@ export default function CompareWorkspace({
           <select
             aria-label={t("目标数据库连接")}
             value={targetId}
+            disabled={busy}
             onChange={(e) => setTargetId(e.target.value)}
           >
             <option value="">{t("选择目标连接")}</option>
             {relational.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name} · {c.database}
+                {c.name}
               </option>
             ))}
           </select>
           <select
-            aria-label={t("目标表")}
-            value={targetName}
-            onChange={(e) => {
-              setTargetName(e.target.value);
-              setTargetNew("");
-            }}
+            aria-label={t("选择目标数据库")}
+            value={targetDatabase}
+            disabled={busy || targetCatalog.loading || !targetId}
+            onChange={(e) => targetCatalog.select(e.target.value)}
           >
-            <option value="">
-              {mode === "structure"
-                ? t("选择已有表，或在下方填写新表名")
-                : t("选择目标表")}
-            </option>
-            {targetObjects.map((o) => (
-              <option key={objectKey(o)} value={objectKey(o)}>
-                {o.schema ? o.schema + "." : ""}
-                {o.name}
+            <option value="">{t("请选择数据库")}</option>
+            {targetCatalog.names.map((name) => (
+              <option key={name} value={name}>
+                {name}
               </option>
             ))}
           </select>
-          {mode === "structure" && !targetName && targetId && (
-            <input
-              aria-label={t("新目标表名")}
-              value={targetNew}
-              onChange={(e) => setTargetNew(e.target.value)}
-              placeholder={t("目标表不存在时，填写新表名称")}
-            />
-          )}
         </section>
+      </div>
+      <div className="compare-table-selection">
+        <div className="compare-table-toolbar">
+          <strong>
+            <Table2 size={14} />
+            {t("选择数据表")}
+          </strong>
+          <span>
+            {t("已选 {0} / {1} 张表", [
+              selectedNames.length,
+              sourceObjects.length,
+            ])}
+          </span>
+          <button
+            className="button"
+            disabled={busy || !tablesReady}
+            onClick={() => setSelectedNames(sourceObjects.map(objectKey))}
+          >
+            {t("全选")}
+          </button>
+          <button
+            className="button"
+            disabled={busy || !tablesReady}
+            onClick={() => setSelectedNames([])}
+          >
+            {t("清空选择")}
+          </button>
+          <input
+            aria-label={t("搜索数据表")}
+            placeholder={t("搜索数据表")}
+            value={search}
+            disabled={busy}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        {loading ? (
+          <p className="compare-selection-hint">
+            <Loader2 size={14} className="spin" />
+            {t("正在读取数据库和数据表…")}
+          </p>
+        ) : tablesReady ? (
+          <div className="compare-table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>{t("选择")}</th>
+                  <th>{t("源表")}</th>
+                  <th>{t("目标表")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleTables.map((o) => {
+                  const key = objectKey(o),
+                    selected = selectedNames.includes(key),
+                    mapped = mappings[key] || "";
+                  return (
+                    <tr key={key}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={t("选择表 {0}", [objectLabel(o)])}
+                          checked={selected}
+                          disabled={busy}
+                          onChange={(e) =>
+                            setSelectedNames((previous) =>
+                              e.target.checked
+                                ? [...previous, key]
+                                : previous.filter((name) => name !== key),
+                            )
+                          }
+                        />
+                      </td>
+                      <td>
+                        <code>{objectLabel(o)}</code>
+                      </td>
+                      <td>
+                        <div className="compare-table-mapping">
+                          <select
+                            aria-label={t("{0} 的目标表", [objectLabel(o)])}
+                            value={mapped}
+                            disabled={busy || !selected}
+                            onChange={(e) =>
+                              setMappings((previous) => ({
+                                ...previous,
+                                [key]: e.target.value,
+                              }))
+                            }
+                          >
+                            <option value="">
+                              {mode === "structure"
+                                ? t("新建目标表")
+                                : t("目标表不存在 / 请选择")}
+                            </option>
+                            {targetObjects.map((item) => (
+                              <option
+                                key={objectKey(item)}
+                                value={objectKey(item)}
+                              >
+                                {objectLabel(item)}
+                              </option>
+                            ))}
+                          </select>
+                          {mode === "structure" && !mapped && (
+                            <input
+                              aria-label={t("{0} 的新目标表名", [
+                                objectLabel(o),
+                              ])}
+                              value={newNames[key] ?? o.name}
+                              disabled={busy || !selected}
+                              onChange={(e) =>
+                                setNewNames((previous) => ({
+                                  ...previous,
+                                  [key]: e.target.value,
+                                }))
+                              }
+                            />
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!visibleTables.length && (
+              <p className="compare-selection-hint">
+                {t("没有符合条件的数据表")}
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="compare-selection-hint">
+            {t("先选择源数据库和目标数据库，再选择其中的数据表。")}
+          </p>
+        )}
+        {missingTargets && (
+          <p className="compare-selection-hint warning">
+            {t(
+              "部分目标表不存在，请先完成结构比对并创建目标表，或取消选择这些表。",
+            )}
+          </p>
+        )}
       </div>
       <div className="compare-policy">
         <ShieldCheck size={14} />
@@ -346,19 +596,66 @@ export default function CompareWorkspace({
               "比对只读取数据库。生成的 SQL 先预览，再手动执行；不自动删除字段。",
             )
           : t(
-              "首版支持同类型 MySQL / PostgreSQL / SQLite，单表 ≤ 10,000 行、8 MB。同步前重检差异，目标库事务执行。",
+              "支持同类型 MySQL / PostgreSQL / SQLite，每表 ≤ 10,000 行、8 MB。所有选中表先校验，再在同一目标事务中同步。",
             )}
       </div>
-      {error && (
+      {(error || sourceCatalog.error || targetCatalog.error) && (
         <div className="compare-message error">
           <TriangleAlert size={16} />
-          {t(error)}
+          {t(error || sourceCatalog.error || targetCatalog.error)}
         </div>
       )}
       {applied && (
         <div className="compare-message success">
           <Check size={16} />
           {t(applied)}
+        </div>
+      )}
+      {(schemas || batch) && (
+        <div className="compare-batch-results">
+          <div className="compare-batch-summary">
+            <strong>
+              {t("已比对 {0} 张表", [
+                schemas?.tables.length ?? batch?.tables.length ?? 0,
+              ])}
+            </strong>
+            {schemas && (
+              <button
+                className="button"
+                disabled={busy || !schemas.sql}
+                onClick={() => onQuery(targetScope, schemas.sql)}
+              >
+                <Code2 size={14} />
+                {t("在目标查询编辑器打开全部 SQL")}
+              </button>
+            )}
+          </div>
+          <div
+            className="compare-result-tabs"
+            role="tablist"
+            aria-label={t("表比对结果")}
+          >
+            {(schemas?.tables ?? batch?.tables ?? []).map((table, index) => (
+              <button
+                key={index}
+                role="tab"
+                aria-selected={resultTable === index}
+                disabled={busy}
+                className={resultTable === index ? "active" : ""}
+                onClick={() => {
+                  setResultTable(index);
+                  setDetail(0);
+                }}
+              >
+                {objectLabel(table.sourceObject)}{" "}
+                <span>
+                  {"differences" in table
+                    ? table.differences.length
+                    : table.changes.length}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {schema ? (
@@ -378,7 +675,7 @@ export default function CompareWorkspace({
             <button
               className="button"
               disabled={!schema.sql || schema.sql.startsWith("--")}
-              onClick={() => onQuery(targetId, schema.sql)}
+              onClick={() => onQuery(targetScope, schema.sql)}
             >
               <Code2 size={14} />
               {t("在目标查询编辑器打开")}
@@ -467,7 +764,9 @@ export default function CompareWorkspace({
               {t("目标额外")}
             </span>
             <span className="gray">
-              <strong>{plan.unchanged}</strong>
+              <strong>
+                {batch?.tables.reduce((sum, table) => sum + table.unchanged, 0)}
+              </strong>
               {t("相同")}
             </span>
             <div>
@@ -484,14 +783,15 @@ export default function CompareWorkspace({
             <button
               className="button primary"
               disabled={
-                !counts.insert &&
-                !counts.update &&
-                (!deleteExtra || !counts.delete)
+                busy ||
+                (!counts.insert &&
+                  !counts.update &&
+                  (!deleteExtra || !counts.delete))
               }
               onClick={() => setConfirm(true)}
             >
               <ArrowRightLeft size={15} />
-              {t("执行同步")}
+              {t("同步全部选中表")}
             </button>
           </div>
           <div className="sync-diff-panels">
@@ -585,14 +885,16 @@ export default function CompareWorkspace({
                 ? t("先比对结构，再审阅变更。")
                 : t("预览每条差异，再执行同步。")}
             </h3>
-            <p>{t("选择源连接和目标连接，点击“开始比对”。")}</p>
+            <p>
+              {t("先选择源数据库和目标数据库，再勾选需要比对或同步的数据表。")}
+            </p>
             {relational.length < 2 && (
               <p>{t("可以新建另一个 SQLite 文件连接来体验比对与同步。")}</p>
             )}
           </div>
         )
       )}
-      {confirm && plan && (
+      {confirm && batch && (
         <div className="modal-backdrop">
           <section
             className="modal action-modal"
@@ -606,7 +908,8 @@ export default function CompareWorkspace({
               <div>
                 <h2>{t("确认同步到目标数据库")}</h2>
                 <p>
-                  {source?.name} → {target?.name}
+                  {source?.name} / {sourceDatabase} → {target?.name} /{" "}
+                  {targetDatabase}
                 </p>
               </div>
               <button
@@ -620,7 +923,7 @@ export default function CompareWorkspace({
             </div>
             <div className="sync-confirm-body">
               <strong>
-                {target?.database} / {targetObject?.name}
+                {targetDatabase} · {t("{0} 个表", [batch.tables.length])}
               </strong>
               <p>
                 {t("将新增 {0} 条、更新 {1} 条{2}。", [
@@ -633,7 +936,7 @@ export default function CompareWorkspace({
               </p>
               <p>
                 {t(
-                  "执行前会重新校验源表和目标表，变化时取消同步。任一数据变更失败会回滚目标事务。",
+                  "执行前会重新校验所有选中表，变化时取消同步。任一表变更失败会回滚整个批次。",
                 )}
               </p>
               {target?.environment === "production" && (

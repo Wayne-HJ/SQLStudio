@@ -138,6 +138,28 @@ export interface SyncPlan {
   columns: string[];
   expiresAt: string;
 }
+export interface DatabaseScope {
+  connectionId: string;
+  database: string;
+}
+export interface TablePair {
+  source: DbObject;
+  target: DbObject;
+}
+export interface DatabaseSchemaComparison {
+  tables: (SchemaComparison & {
+    sourceObject: DbObject;
+    targetObject: DbObject;
+  })[];
+  sql: string;
+}
+export interface DatabaseSyncPlan {
+  id: string;
+  source: DatabaseScope;
+  target: DatabaseScope;
+  tables: SyncPlan[];
+  expiresAt: string;
+}
 export interface Api {
   connections(): Promise<Connection[]>;
   saveConnection(connection: Connection): Promise<Connection>;
@@ -145,6 +167,10 @@ export interface Api {
   connect(connection: Connection): Promise<{ version: string }>;
   disconnect(id: string): Promise<void>;
   test(connection: Connection): Promise<{ version: string }>;
+  databases(id: string): Promise<{ names: string[]; selected: string }>;
+  selectDatabase(id: string, database: string): Promise<void>;
+  dropDatabase(id: string, database: string): Promise<void>;
+  databaseObjects(scope: DatabaseScope): Promise<DbObject[]>;
   objects(id: string): Promise<DbObject[]>;
   schema(id: string, object: DbObject): Promise<TableInfo>;
   table(
@@ -203,6 +229,20 @@ export interface Api {
     targetObject: DbObject,
   ): Promise<SyncPlan>;
   applySync(
+    planId: string,
+    deleteExtra: boolean,
+  ): Promise<{ inserted: number; updated: number; deleted: number }>;
+  compareDatabaseSchemas(
+    source: DatabaseScope,
+    target: DatabaseScope,
+    tables: TablePair[],
+  ): Promise<DatabaseSchemaComparison>;
+  compareDatabaseData(
+    source: DatabaseScope,
+    target: DatabaseScope,
+    tables: TablePair[],
+  ): Promise<DatabaseSyncPlan>;
+  applyDatabaseSync(
     planId: string,
     deleteExtra: boolean,
   ): Promise<{ inserted: number; updated: number; deleted: number }>;

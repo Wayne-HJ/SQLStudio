@@ -385,7 +385,11 @@ export default function ConnectionDialog({
                       value={config.database}
                       onChange={(e) => patch({ database: e.target.value })}
                       placeholder={
-                        config.engine === "redis" ? "0" : t("例如 commerce")
+                        config.engine === "redis"
+                          ? "0"
+                          : config.engine === "mysql"
+                            ? t("可留空，连接后选择数据库")
+                            : t("例如 commerce")
                       }
                     />
                   </label>

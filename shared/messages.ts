@@ -20,6 +20,61 @@ export const englishMessages: Record<string, string> = {
   键盘快捷键: "Keyboard shortcuts",
   "SQLStudio · 数据库工作空间": "SQLStudio · Database workspace",
   数据库对象已刷新: "Database objects refreshed",
+  请选择数据库: "Select a database",
+  打开数据库: "Open database",
+  "删除数据库…": "Delete database…",
+  "清空数据库…": "Empty database…",
+  "删除数据库 {0}？": "Delete database {0}?",
+  "清空数据库 {0}？": "Empty database {0}?",
+  "将永久删除「{0} / {1}」数据库及其中的全部表和数据。此操作无法在应用内撤销，连接配置将保留。":
+    "Permanently delete database “{0} / {1}” and all its tables and data. This cannot be undone in the app. The connection profile will be retained.",
+  "将永久删除「{0} / {1}」的数据库文件及全部数据。此操作无法在应用内撤销，连接配置将保留。":
+    "Permanently delete the database file for “{0} / {1}” and all its data. This cannot be undone in the app. The connection profile will be retained.",
+  "将永久清空「{0} / {1}」中的全部键。此操作无法在应用内撤销，连接配置将保留。":
+    "Permanently remove all keys from “{0} / {1}”. This cannot be undone in the app. The connection profile will be retained.",
+  数据库已删除: "Database deleted",
+  数据库已清空: "Database emptied",
+  示例数据库不能删除: "The demo database cannot be deleted",
+  系统数据库不能删除: "System databases cannot be deleted",
+  选择源数据库: "Select source database",
+  选择目标数据库: "Select target database",
+  选择数据表: "Select tables",
+  "已选 {0} / {1} 张表": "{0} / {1} tables selected",
+  清空选择: "Clear selection",
+  搜索数据表: "Search tables",
+  "选择表 {0}": "Select table {0}",
+  "{0} 的目标表": "Target table for {0}",
+  "{0} 的新目标表名": "New target table name for {0}",
+  新建目标表: "Create target table",
+  请填写目标表名称: "Enter the target table name",
+  "目标表不存在 / 请选择": "Target table missing / Select a table",
+  "正在读取数据库和数据表…": "Loading databases and tables…",
+  没有符合条件的数据表: "No matching tables",
+  "先选择源数据库和目标数据库，再选择其中的数据表。":
+    "Select source and target databases first, then choose their tables.",
+  "先选择源数据库和目标数据库，再勾选需要比对或同步的数据表。":
+    "Select source and target databases, then check the tables to compare or synchronize.",
+  "请先选择源数据库、目标数据库和数据表。":
+    "Select source and target databases and tables first.",
+  "部分目标表不存在，请先完成结构比对并创建目标表，或取消选择这些表。":
+    "Some target tables are missing. Compare schemas and create them first, or deselect those tables.",
+  "请选择 1 至 500 张数据表": "Select between 1 and 500 tables",
+  同一张表不能重复选择或映射:
+    "A table cannot be selected or mapped more than once",
+  "已比对 {0} 张表": "{0} tables compared",
+  "在目标查询编辑器打开全部 SQL": "Open all SQL in target query editor",
+  表比对结果: "Table comparison results",
+  同步全部选中表: "Synchronize all selected tables",
+  "支持同类型 MySQL / PostgreSQL / SQLite，每表 ≤ 10,000 行、8 MB。所有选中表先校验，再在同一目标事务中同步。":
+    "Supports matching MySQL / PostgreSQL / SQLite engines, up to 10,000 rows and 8 MB per table. All selected tables are validated before synchronization in one target transaction.",
+  "执行前会重新校验所有选中表，变化时取消同步。任一表变更失败会回滚整个批次。":
+    "All selected tables are rechecked before execution. Any changes cancel synchronization. A failure in any table rolls back the entire batch.",
+  暂无可访问的数据库: "No accessible databases",
+  此连接不支持切换数据库:
+    "This connection does not support switching databases",
+  "在左侧选择数据库，查看其中的数据表和视图。":
+    "Select a database in the sidebar to browse its tables and views.",
+  "可留空，连接后选择数据库": "Optional; select a database after connecting",
   "查询完成 · {0} 行{1}": "Query completed · {0} rows{1}",
   "（结果已截断为 1,000 行）": " (results limited to 1,000 rows)",
   "执行成功 · {0} 行受影响": "Completed · {0} rows affected",

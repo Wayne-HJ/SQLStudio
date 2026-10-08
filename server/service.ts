@@ -29,6 +29,10 @@ import type {
   SyncPlan,
   Column,
   TableFilter,
+  DatabaseScope,
+  TablePair,
+  DatabaseSchemaComparison,
+  DatabaseSyncPlan,
 } from "../shared/types.js";
 
 interface Session {
@@ -38,6 +42,11 @@ interface Session {
   version: string;
   sqliteHash?: string;
   sqliteInvalidated?: boolean;
+}
+interface SyncEntry {
+  plan: SyncPlan;
+  sourceHash: string;
+  targetHash: string;
 }
 export const demoConnection: Connection = {
   id: "demo",
@@ -54,9 +63,10 @@ export const demoConnection: Connection = {
 export class DatabaseService {
   private sessions = new Map<string, Session>();
   private transient = new Map<string, Connection>();
-  private syncPlans = new Map<
+  private syncPlans = new Map<string, SyncEntry>();
+  private databaseSyncPlans = new Map<
     string,
-    { plan: SyncPlan; sourceHash: string; targetHash: string }
+    { plan: DatabaseSyncPlan; entries: SyncEntry[] }
   >();
   constructor(
     private directory: string,
@@ -194,7 +204,7 @@ export class DatabaseService {
             port: config.port,
             user: config.username,
             password: config.password,
-            database: config.database,
+            database: config.database || undefined,
             ssl: config.ssl ? { rejectUnauthorized: true } : undefined,
             connectTimeout: 10000,
             multipleStatements: false,
@@ -339,7 +349,7 @@ export class DatabaseService {
     return q + name.replaceAll(q, q + q) + q;
   }
   private tableName(s: Session, o: DbObject) {
-    return o.schema && s.config.engine === "postgres"
+    return o.schema && ["postgres", "mysql"].includes(s.config.engine)
       ? `${this.quote(s, o.schema)}.${this.quote(s, o.name)}`
       : this.quote(s, o.name);
   }
@@ -401,6 +411,178 @@ export class DatabaseService {
       truncated: rows.length > rowLimit,
     };
   }
+  async databases(id: string) {
+    const s = this.get(id);
+    if (s.config.engine === "postgres") {
+      const names = (
+        await this.sql(
+          s,
+          "SELECT datname AS name FROM pg_database WHERE datallowconn AND NOT datistemplate AND has_database_privilege(datname, 'CONNECT') ORDER BY datname",
+          [],
+          Infinity,
+        )
+      ).rows.map((row) => String(row.name));
+      return { names, selected: s.config.database };
+    }
+    if (s.config.engine !== "mysql")
+      return { names: [s.config.database], selected: s.config.database };
+    const names = (await this.sql(s, "SHOW DATABASES", [], Infinity)).rows.map(
+      (row) => String(row.Database),
+    );
+    const current = (await this.sql(s, "SELECT DATABASE() AS name")).rows[0]
+      ?.name;
+    const selected = typeof current === "string" ? current : "";
+    // Keep USE statements from the query editor in sync with the browser.
+    s.config = { ...s.config, database: selected };
+    return { names, selected };
+  }
+  async selectDatabase(id: string, database: string) {
+    const s = this.get(id);
+    if (!database) throw new Error("请选择数据库");
+    if (s.config.engine === "postgres") {
+      const next = await this.open({ ...s.config, database });
+      this.sessions.set(id, next);
+      await this.close(s);
+      return;
+    }
+    if (s.config.engine !== "mysql") throw new Error("此连接不支持切换数据库");
+    await this.sql(s, `USE ${this.quote(s, database)}`);
+    // Update only the session; the saved default may intentionally be blank.
+    s.config = { ...s.config, database };
+  }
+  // Scoped operations leave the database selected in the object browser intact.
+  private async inDatabase<T>(
+    scope: DatabaseScope,
+    run: (id: string) => Promise<T>,
+  ): Promise<T> {
+    const base = this.get(scope.connectionId);
+    if (!scope.database) throw new Error("请选择数据库");
+    if (base.config.database === scope.database) return run(scope.connectionId);
+    if (!["mysql", "postgres"].includes(base.config.engine))
+      throw new Error("此连接不支持切换数据库");
+    const id = randomUUID();
+    const scoped =
+      base.config.engine === "mysql"
+        ? { ...base, config: { ...base.config, database: scope.database } }
+        : await this.open({ ...base.config, id, database: scope.database });
+    this.sessions.set(id, scoped);
+    try {
+      return await run(id);
+    } finally {
+      this.sessions.delete(id);
+      if (base.config.engine !== "mysql") await this.close(scoped, false);
+    }
+  }
+  async databaseObjects(scope: DatabaseScope) {
+    return this.inDatabase(scope, (id) => this.objects(id));
+  }
+  async dropDatabase(id: string, database: string) {
+    const s = this.get(id);
+    if (!database) throw new Error("请选择数据库");
+    if (id === "demo") throw new Error("示例数据库不能删除");
+    if (s.config.engine === "mysql") {
+      if (
+        ["mysql", "information_schema", "performance_schema", "sys"].includes(
+          database.toLowerCase(),
+        )
+      )
+        throw new Error("系统数据库不能删除");
+      await this.sql(s, `DROP DATABASE ${this.quote(s, database)}`);
+      for (const session of this.sessions.values())
+        if (
+          session.config.engine === "mysql" &&
+          session.config.host === s.config.host &&
+          session.config.port === s.config.port &&
+          session.config.database === database
+        )
+          session.config = { ...session.config, database: "" };
+    } else if (s.config.engine === "postgres") {
+      if (
+        ["postgres", "template0", "template1"].includes(database.toLowerCase())
+      )
+        throw new Error("系统数据库不能删除");
+      const maintenance = await this.open({
+        ...s.config,
+        id: randomUUID(),
+        database: "postgres",
+      });
+      const disconnected: { id: string; config: Connection }[] = [];
+      try {
+        for (const [sessionId, session] of this.sessions)
+          if (
+            session.config.engine === "postgres" &&
+            session.config.host === s.config.host &&
+            session.config.port === s.config.port &&
+            session.config.database === database
+          ) {
+            disconnected.push({ id: sessionId, config: session.config });
+            await this.disconnect(sessionId);
+          }
+        await this.sql(
+          maintenance,
+          `DROP DATABASE ${this.quote(maintenance, database)}`,
+        );
+      } catch (error) {
+        // A server-side refusal (for example, another client is connected)
+        // must not leave our previously open database connections unusable.
+        for (const previous of disconnected) {
+          const restored = await this.open(previous.config).catch(
+            () => undefined,
+          );
+          if (restored) this.sessions.set(previous.id, restored);
+        }
+        throw error;
+      } finally {
+        await this.close(maintenance, false);
+      }
+    } else if (s.config.engine === "sqlite") {
+      if (database !== s.config.database || !s.config.filePath)
+        throw new Error("请选择数据库");
+      const filename = path.resolve(s.config.filePath);
+      if (filename === path.resolve(this.directory, "commerce.db"))
+        throw new Error("示例数据库不能删除");
+      await this.assertSqliteFile(filename);
+      const current = await fs.readFile(filename);
+      if (createHash("sha256").update(current).digest("hex") !== s.sqliteHash)
+        throw new Error("SQLite 文件已被其他进程修改，请断开后重新连接。");
+      // Close without persistence so shutdown cannot recreate the deleted file.
+      for (const [sessionId, session] of this.sessions)
+        if (
+          session.sqlite &&
+          session.config.filePath &&
+          path.resolve(session.config.filePath) === filename
+        ) {
+          this.sessions.delete(sessionId);
+          await this.close(session, false);
+        }
+      await fs.unlink(filename);
+    } else if (s.config.engine === "mongodb") {
+      if (["admin", "config", "local"].includes(database.toLowerCase()))
+        throw new Error("系统数据库不能删除");
+      await s.client.db(database).dropDatabase();
+    } else {
+      if (database !== s.config.database) throw new Error("请选择数据库");
+      await s.client.flushDb();
+    }
+    this.syncPlans.clear();
+    this.databaseSyncPlans.clear();
+    if (["mysql", "postgres"].includes(s.config.engine)) {
+      const fallback = s.config.engine === "postgres" ? "postgres" : "";
+      for (const config of await this.store.list())
+        if (
+          config.engine === s.config.engine &&
+          config.host === s.config.host &&
+          config.port === s.config.port &&
+          config.database === database
+        ) {
+          const updated = { ...config, database: fallback };
+          await this.store.save(updated);
+          const transient = this.transient.get(config.id);
+          if (transient)
+            this.transient.set(config.id, { ...transient, database: fallback });
+        }
+    }
+  }
   async objects(id: string): Promise<DbObject[]> {
     const s = this.get(id);
     if (s.config.engine === "sqlite") {
@@ -426,13 +608,17 @@ export class DatabaseService {
       return objects;
     }
     if (s.config.engine === "mysql") {
+      if (!s.config.database) return [];
       return (
         await this.sql(
           s,
           "SELECT TABLE_NAME AS name, IF(TABLE_TYPE='VIEW','view','table') AS type,TABLE_ROWS AS rowCount,DATA_LENGTH AS dataLength,ENGINE AS engine,CREATE_TIME AS createdAt,UPDATE_TIME AS modifiedAt,TABLE_COLLATION AS collation,TABLE_COMMENT AS comment,true AS estimated FROM information_schema.TABLES WHERE TABLE_SCHEMA=? ORDER BY TABLE_NAME",
           [s.config.database],
         )
-      ).rows as unknown as DbObject[];
+      ).rows.map((row) => ({
+        ...row,
+        schema: s.config.database,
+      })) as unknown as DbObject[];
     }
     if (s.config.engine === "postgres") {
       return (
@@ -502,7 +688,7 @@ export class DatabaseService {
         await this.sql(
           s,
           "SELECT COLUMN_NAME AS name,COLUMN_TYPE AS type,IS_NULLABLE AS nullable,COLUMN_KEY AS pk,COLUMN_DEFAULT AS defaultValue FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION",
-          [s.config.database, o.name],
+          [o.schema || s.config.database, o.name],
         )
       ).rows.map((c) => ({
         ...c,
@@ -513,14 +699,14 @@ export class DatabaseService {
         await this.sql(
           s,
           "SELECT COLUMN_NAME AS `column`,REFERENCED_TABLE_NAME AS `table`,REFERENCED_COLUMN_NAME AS foreignColumn FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL",
-          [s.config.database, o.name],
+          [o.schema || s.config.database, o.name],
         )
       ).rows as any;
       const indexes = (
         await this.sql(
           s,
           "SELECT INDEX_NAME AS name,GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS `columns`,MIN(NON_UNIQUE) AS nonUnique FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? GROUP BY INDEX_NAME ORDER BY INDEX_NAME",
-          [s.config.database, o.name],
+          [o.schema || s.config.database, o.name],
         )
       ).rows;
       info.indexes = indexes.map((i) => ({
@@ -1084,12 +1270,46 @@ export class DatabaseService {
     sourceObject: DbObject,
     targetObject: DbObject,
   ): Promise<SyncPlan> {
+    const entry = await this.prepareSync(
+      sourceId,
+      targetId,
+      sourceObject,
+      targetObject,
+    );
+    for (const [id, cached] of this.syncPlans)
+      if (new Date(cached.plan.expiresAt).getTime() < Date.now())
+        this.syncPlans.delete(id);
+    if (this.syncPlans.size >= 10)
+      this.syncPlans.delete(this.syncPlans.keys().next().value!);
+    this.syncPlans.set(entry.plan.id, entry);
+    return entry.plan;
+  }
+  private async prepareSync(
+    sourceId: string,
+    targetId: string,
+    sourceObject: DbObject,
+    targetObject: DbObject,
+  ): Promise<SyncEntry> {
     const source = this.relational(sourceId),
       target = this.relational(targetId);
     if (
-      sourceId === targetId &&
+      ((sourceId === targetId &&
+        (source.config.engine !== "mysql" ||
+          (sourceObject.schema || source.config.database) ===
+            (targetObject.schema || target.config.database))) ||
+        (source.config.engine === target.config.engine &&
+          ["mysql", "postgres"].includes(source.config.engine) &&
+          source.config.host === target.config.host &&
+          source.config.port === target.config.port &&
+          (source.config.engine === "mysql"
+            ? sourceObject.schema || source.config.database
+            : source.config.database) ===
+            (target.config.engine === "mysql"
+              ? targetObject.schema || target.config.database
+              : target.config.database))) &&
       sourceObject.name === targetObject.name &&
-      sourceObject.schema === targetObject.schema
+      (source.config.engine === "mysql" ||
+        (sourceObject.schema || "public") === (targetObject.schema || "public"))
     )
       throw new Error("源表和目标表不能相同");
     if (source.config.engine !== target.config.engine)
@@ -1107,7 +1327,7 @@ export class DatabaseService {
         await this.sql(
           target,
           "SELECT ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?",
-          [target.config.database, targetObject.name],
+          [targetObject.schema || target.config.database, targetObject.name],
         )
       ).rows[0];
       if (row?.engine !== "InnoDB")
@@ -1155,25 +1375,158 @@ export class DatabaseService {
       columns: columns.map((c) => c.name),
       expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
     };
-    for (const [id, entry] of this.syncPlans)
-      if (new Date(entry.plan.expiresAt).getTime() < Date.now())
-        this.syncPlans.delete(id);
-    if (this.syncPlans.size >= 10)
-      this.syncPlans.delete(this.syncPlans.keys().next().value!);
-    this.syncPlans.set(plan.id, {
+    return {
       plan,
       sourceHash: from.hash,
       targetHash: to.hash,
-    });
+    };
+  }
+  private scopedObject(scope: DatabaseScope, object: DbObject): DbObject {
+    if (object.type !== "table") throw new Error("数据同步只支持数据表");
+    const engine = this.relational(scope.connectionId).config.engine;
+    return {
+      ...object,
+      schema:
+        engine === "mysql"
+          ? scope.database
+          : engine === "postgres"
+            ? object.schema || "public"
+            : undefined,
+    };
+  }
+  private scopedPairs(
+    source: DatabaseScope,
+    target: DatabaseScope,
+    tables: TablePair[],
+  ) {
+    if (!tables.length || tables.length > 500)
+      throw new Error("请选择 1 至 500 张数据表");
+    const pairs = tables.map((pair) => ({
+      source: this.scopedObject(source, pair.source),
+      target: this.scopedObject(target, pair.target),
+    }));
+    const key = (object: DbObject) =>
+      JSON.stringify([object.schema, object.name]);
+    if (
+      new Set(pairs.map((pair) => key(pair.source))).size !== pairs.length ||
+      new Set(pairs.map((pair) => key(pair.target))).size !== pairs.length
+    )
+      throw new Error("同一张表不能重复选择或映射");
+    return pairs;
+  }
+  async compareDatabaseSchemas(
+    source: DatabaseScope,
+    target: DatabaseScope,
+    tables: TablePair[],
+  ): Promise<DatabaseSchemaComparison> {
+    const pairs = this.scopedPairs(source, target, tables);
+    return this.inDatabase(source, (sourceId) =>
+      this.inDatabase(target, async (targetId) => {
+        const results: DatabaseSchemaComparison["tables"] = [];
+        for (const pair of pairs)
+          results.push({
+            ...(await this.compareSchemas(
+              sourceId,
+              targetId,
+              pair.source,
+              pair.target,
+            )),
+            sourceObject: pair.source,
+            targetObject: pair.target,
+          });
+        return {
+          tables: results,
+          sql: results
+            .map((result) => result.sql)
+            .filter((sql) => !sql.startsWith("--"))
+            .join("\n\n"),
+        };
+      }),
+    );
+  }
+  async compareDatabaseData(
+    source: DatabaseScope,
+    target: DatabaseScope,
+    tables: TablePair[],
+  ): Promise<DatabaseSyncPlan> {
+    const pairs = this.scopedPairs(source, target, tables);
+    const entries = await this.inDatabase(source, (sourceId) =>
+      this.inDatabase(target, async (targetId) => {
+        const results: SyncEntry[] = [];
+        for (const pair of pairs) {
+          try {
+            results.push(
+              await this.prepareSync(
+                sourceId,
+                targetId,
+                pair.source,
+                pair.target,
+              ),
+            );
+          } catch (error) {
+            throw new Error(
+              `${pair.source.name} → ${pair.target.name}: ${(error as Error).message}`,
+            );
+          }
+        }
+        return results;
+      }),
+    );
+    // Keep connection identities stable after closing any temporary sessions.
+    for (const entry of entries) {
+      entry.plan.sourceId = source.connectionId;
+      entry.plan.targetId = target.connectionId;
+    }
+    const plan: DatabaseSyncPlan = {
+      id: randomUUID(),
+      source,
+      target,
+      tables: entries.map((entry) => entry.plan),
+      expiresAt: entries[0].plan.expiresAt,
+    };
+    for (const [id, cached] of this.databaseSyncPlans)
+      if (new Date(cached.plan.expiresAt).getTime() < Date.now())
+        this.databaseSyncPlans.delete(id);
+    if (this.databaseSyncPlans.size >= 10)
+      this.databaseSyncPlans.delete(
+        this.databaseSyncPlans.keys().next().value!,
+      );
+    this.databaseSyncPlans.set(plan.id, { plan, entries });
     return plan;
+  }
+  async applyDatabaseSync(planId: string, deleteExtra: boolean) {
+    const cached = this.databaseSyncPlans.get(planId);
+    if (!cached || new Date(cached.plan.expiresAt).getTime() < Date.now())
+      throw new Error("同步方案已过期，请重新比对");
+    const result = await this.inDatabase(cached.plan.source, (sourceId) =>
+      this.inDatabase(cached.plan.target, (targetId) =>
+        this.applySyncEntries(cached.entries, deleteExtra, sourceId, targetId),
+      ),
+    );
+    this.databaseSyncPlans.delete(planId);
+    return result;
   }
   async applySync(planId: string, deleteExtra: boolean) {
     const entry = this.syncPlans.get(planId);
     if (!entry || new Date(entry.plan.expiresAt).getTime() < Date.now())
       throw new Error("同步方案已过期，请重新比对");
-    const { plan } = entry;
-    const source = this.relational(plan.sourceId),
-      target = this.relational(plan.targetId);
+    const result = await this.applySyncEntries(
+      [entry],
+      deleteExtra,
+      entry.plan.sourceId,
+      entry.plan.targetId,
+    );
+    this.syncPlans.delete(planId);
+    return result;
+  }
+  private async applySyncEntries(
+    entries: SyncEntry[],
+    deleteExtra: boolean,
+    sourceId: string,
+    targetId: string,
+  ) {
+    this.relational(sourceId);
+    const target = this.relational(targetId);
     const counts = { inserted: 0, updated: 0, deleted: 0 };
     let targetTransaction = false;
     try {
@@ -1187,88 +1540,127 @@ export class DatabaseService {
         await this.sql(target, "START TRANSACTION");
       } else await this.sql(target, "BEGIN");
       targetTransaction = true;
-      const freshSource = await this.snapshot(plan.sourceId, plan.sourceObject),
-        freshTarget = await this.snapshot(plan.targetId, plan.targetObject);
-      if (
-        freshSource.hash !== entry.sourceHash ||
-        freshTarget.hash !== entry.targetHash
-      )
-        throw new Error(
-          "比对后源表或目标表发生了变化。已取消同步，请重新比对。",
-        );
-      for (const change of plan.changes) {
-        if (change.kind === "insert") {
-          const values = change.source!;
-          await this.sql(
-            target,
-            `INSERT INTO ${this.tableName(target, plan.targetObject)} (${Object.keys(
-              values,
-            )
-              .map((c) => this.quote(target, c))
-              .join(
-                ",",
-              )})${target.config.engine === "postgres" ? " OVERRIDING SYSTEM VALUE" : ""} VALUES (${Object.keys(
-              values,
-            )
-              .map((_, i) => this.bind(target, i + 1))
-              .join(",")})`,
-            Object.values(values),
+      const schemas = new Map<SyncEntry, TableInfo>();
+      for (const entry of entries) {
+        const { plan } = entry;
+        const freshSource = await this.snapshot(sourceId, plan.sourceObject),
+          freshTarget = await this.snapshot(targetId, plan.targetObject);
+        if (
+          freshSource.hash !== entry.sourceHash ||
+          freshTarget.hash !== entry.targetHash
+        )
+          throw new Error(
+            "比对后源表或目标表发生了变化。已取消同步，请重新比对。",
           );
-          counts.inserted++;
+        schemas.set(entry, freshTarget.schema);
+      }
+      // Parents are written first; child rows are removed first.
+      const ordered: SyncEntry[] = [],
+        visiting = new Set<SyncEntry>();
+      const visit = (entry: SyncEntry) => {
+        if (ordered.includes(entry) || visiting.has(entry)) return;
+        visiting.add(entry);
+        for (const fk of schemas.get(entry)!.foreignKeys) {
+          const parent = entries.find(
+            (candidate) =>
+              candidate !== entry &&
+              candidate.plan.targetObject.name === fk.table &&
+              candidate.plan.targetObject.schema ===
+                entry.plan.targetObject.schema,
+          );
+          if (parent) visit(parent);
         }
-        if (change.kind === "update") {
-          const values = Object.fromEntries(
-            change.fields.map((c) => [c, change.source![c]]),
-          );
-          await this.sql(
-            target,
-            `UPDATE ${this.tableName(target, plan.targetObject)} SET ${Object.keys(
-              values,
-            )
-              .map(
-                (c, i) =>
-                  `${this.quote(target, c)}=${this.bind(target, i + 1)}`,
-              )
-              .join(
-                ",",
-              )} WHERE ${this.where(target, change.key, Object.keys(values).length)}`,
-            [...Object.values(values), ...Object.values(change.key)],
-          );
-          counts.updated++;
-        }
-        if (change.kind === "delete" && deleteExtra) {
-          await this.sql(
-            target,
-            `DELETE FROM ${this.tableName(target, plan.targetObject)} WHERE ${this.where(target, change.key)}`,
-            Object.values(change.key),
-          );
-          counts.deleted++;
+        visiting.delete(entry);
+        ordered.push(entry);
+      };
+      entries.forEach(visit);
+      for (const phase of ["write", "delete"] as const) {
+        for (const entry of phase === "write"
+          ? ordered
+          : [...ordered].reverse()) {
+          const { plan } = entry;
+          for (const change of plan.changes) {
+            if ((change.kind === "delete") !== (phase === "delete")) continue;
+            if (change.kind === "insert") {
+              const values = change.source!;
+              await this.sql(
+                target,
+                `INSERT INTO ${this.tableName(target, plan.targetObject)} (${Object.keys(
+                  values,
+                )
+                  .map((c) => this.quote(target, c))
+                  .join(
+                    ",",
+                  )})${target.config.engine === "postgres" ? " OVERRIDING SYSTEM VALUE" : ""} VALUES (${Object.keys(
+                  values,
+                )
+                  .map((_, i) => this.bind(target, i + 1))
+                  .join(",")})`,
+                Object.values(values),
+              );
+              counts.inserted++;
+            }
+            if (change.kind === "update") {
+              const values = Object.fromEntries(
+                change.fields.map((c) => [c, change.source![c]]),
+              );
+              await this.sql(
+                target,
+                `UPDATE ${this.tableName(target, plan.targetObject)} SET ${Object.keys(
+                  values,
+                )
+                  .map(
+                    (c, i) =>
+                      `${this.quote(target, c)}=${this.bind(target, i + 1)}`,
+                  )
+                  .join(
+                    ",",
+                  )} WHERE ${this.where(target, change.key, Object.keys(values).length)}`,
+                [...Object.values(values), ...Object.values(change.key)],
+              );
+              counts.updated++;
+            }
+            if (change.kind === "delete" && deleteExtra) {
+              await this.sql(
+                target,
+                `DELETE FROM ${this.tableName(target, plan.targetObject)} WHERE ${this.where(target, change.key)}`,
+                Object.values(change.key),
+              );
+              counts.deleted++;
+            }
+          }
         }
       }
-      if (target.config.engine === "postgres" && counts.inserted) {
-        for (const column of freshTarget.schema.columns.filter(
-          (c) => c.primaryKey,
-        )) {
-          const sequence = (
-            await this.sql(
-              target,
-              "SELECT pg_get_serial_sequence($1,$2) AS sequence",
-              [this.tableName(target, plan.targetObject), column.name],
-            )
-          ).rows[0]?.sequence;
-          if (sequence) {
-            const maximum = (
+      for (const entry of entries) {
+        const { plan } = entry;
+        if (
+          target.config.engine === "postgres" &&
+          plan.changes.some((change) => change.kind === "insert")
+        ) {
+          for (const column of schemas
+            .get(entry)!
+            .columns.filter((c) => c.primaryKey)) {
+            const sequence = (
               await this.sql(
                 target,
-                `SELECT MAX(${this.quote(target, column.name)}) AS maximum FROM ${this.tableName(target, plan.targetObject)}`,
+                "SELECT pg_get_serial_sequence($1,$2) AS sequence",
+                [this.tableName(target, plan.targetObject), column.name],
               )
-            ).rows[0]?.maximum;
-            if (maximum != null) {
-              await this.sql(
-                target,
-                `SELECT setval($1::regclass, GREATEST($2::bigint,COALESCE((SELECT p.last_value FROM pg_sequences p JOIN pg_namespace n ON n.nspname=p.schemaname JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=p.sequencename WHERE c.oid=$1::regclass),1)),true)`,
-                [sequence, maximum],
-              );
+            ).rows[0]?.sequence;
+            if (sequence) {
+              const maximum = (
+                await this.sql(
+                  target,
+                  `SELECT MAX(${this.quote(target, column.name)}) AS maximum FROM ${this.tableName(target, plan.targetObject)}`,
+                )
+              ).rows[0]?.maximum;
+              if (maximum != null) {
+                await this.sql(
+                  target,
+                  `SELECT setval($1::regclass, GREATEST($2::bigint,COALESCE((SELECT p.last_value FROM pg_sequences p JOIN pg_namespace n ON n.nspname=p.schemaname JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=p.sequencename WHERE c.oid=$1::regclass),1)),true)`,
+                  [sequence, maximum],
+                );
+              }
             }
           }
         }
@@ -1276,7 +1668,6 @@ export class DatabaseService {
       await this.sql(target, "COMMIT");
       targetTransaction = false;
       await this.persist(target);
-      this.syncPlans.delete(planId);
       return counts;
     } catch (error) {
       if (targetTransaction) await this.sql(target, "ROLLBACK").catch(() => {});
@@ -1576,7 +1967,7 @@ export class DatabaseService {
     if (o.type !== "table") throw new Error("首版重命名仅支持表、集合和键");
     await this.sql(
       s,
-      `ALTER TABLE ${this.tableName(s, o)} RENAME TO ${this.quote(s, newName)}`,
+      `ALTER TABLE ${this.tableName(s, o)} RENAME TO ${s.config.engine === "mysql" ? this.tableName(s, { ...o, name: newName }) : this.quote(s, newName)}`,
     );
     await this.persist(s);
   }

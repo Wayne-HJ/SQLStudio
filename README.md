@@ -1,74 +1,116 @@
 # SQLStudio
 
-面向 macOS 和 Windows 的数据库桌面客户端。主界面参照用户提供的 Navicat 布局：顶部对象工具栏、左侧灰色连接树、右侧对象列表和多标签编辑区。
+**An open-source desktop database workspace for macOS and Windows.**
 
-应用图标采用居中的白色倒置 Ω（℧）与蓝紫渐变圆角背景。统一素材为 `public/app-icon.png`，用于 macOS Dock、Windows 程序及安装器、浏览器 favicon、标题栏和系统设置；electron-builder 自动生成 ICNS / ICO 及各尺寸图标。原始确认稿与生成提示词见 [图标说明](docs/app-icon.md)。
+SQLStudio brings SQL databases, MongoDB collections, and Redis keys into one desktop application. Browse data, write queries, inspect schemas, import and export SQL, and compare or synchronize relational tables from a tabbed workspace.
 
-## 运行
+Built with Electron, React, and TypeScript. Released under the [MIT License](LICENSE).
 
-需要 Node.js ≥ 22.12（建议 Node.js 24）和 npm。
+SQLStudio is in early development. The features below are implemented, with the current limits documented alongside them. Bug reports, testing, documentation improvements, and code contributions are welcome.
+
+## Features
+
+| Feature              | What you can do                                                                                                                                       |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Database connections | Connect to MySQL / MariaDB, PostgreSQL, SQLite, MongoDB, and Redis using database drivers.                                                            |
+| Object browser       | Browse tables, views, collections, and Redis keys; switch between list and icon views; search and inspect objects.                                    |
+| Data browser         | Page through records, sort columns, search across fields, combine column filters with AND / OR, and filter MongoDB documents with JSON.               |
+| Query editor         | Use syntax highlighting, SQL completion, selected-statement execution, query history, and saved queries.                                              |
+| Record editing       | Insert, update, and delete relational records with write confirmation. Updates and deletes require the complete primary key.                          |
+| Schema inspection    | Inspect columns, primary keys, foreign keys, and indexes, and view database relationship diagrams.                                                    |
+| Import and export    | Import and export relational SQL, import table data from CSV, export results as CSV / JSON, and back up SQLite files.                                 |
+| Schema comparison    | Compare column types, nullability, defaults, primary keys, indexes, and foreign keys; preview SQL for new tables and columns.                         |
+| Data synchronization | Review inserts, updates, and optional deletions between compatible tables, then apply changes in a transaction after checking for concurrent changes. |
+| Localization         | Switch between English and Simplified Chinese without restarting, including desktop menus and file dialogs.                                           |
+
+## Supported databases
+
+| Database        | Connection                                   | Main workflows                                                                                                     |
+| --------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| MySQL / MariaDB | Host, port, database, and credentials        | SQL queries, record editing, schema inspection, SQL import / export, comparison, and synchronization.              |
+| PostgreSQL      | Host, port, database, and credentials        | SQL queries, record editing, schema inspection, SQL import / export, comparison, and synchronization.              |
+| SQLite          | Local database file                          | SQL queries, record editing, schema inspection, SQL import / export, comparison, synchronization, and file backup. |
+| MongoDB         | Host and credentials, or a connection URI    | Collection browsing, JSON filters, and supported JSON commands.                                                    |
+| Redis           | Host, port, credentials, and database number | Key browsing and commands entered as text or JSON argument arrays.                                                 |
+
+Connection presets include Amazon RDS, Supabase, Neon, MongoDB Atlas, and TiDB Cloud. These use the corresponding database protocols and connection details. TLS connections validate server certificates.
+
+## Quick start
+
+### Install a desktop build
+
+- **macOS:** choose the arm64 DMG for Apple Silicon or the x64 DMG for Intel, open it, and drag SQLStudio into Applications.
+- **Windows:** run the x64 NSIS installer and follow the installation wizard.
+
+Installers can be generated using the [desktop packaging commands](#desktop-packaging). The [CI workflow](.github/workflows/build.yml) also uploads them as build artifacts. Packaged applications include their runtime and do not require Node.js to be installed separately.
+
+### Run from source
+
+Requirements:
+
+- Node.js **22.12 or newer**. The CI workflow uses Node.js 24.
+- npm.
+- macOS or Windows for the desktop application.
+
+From a local clone of this repository:
 
 ```bash
-npm install
+npm ci
 npm run desktop
 ```
 
-开发浏览器预览（含本机数据库服务）：
+The application includes a **Commerce** demo database backed by a real SQLite file, with customers, orders, products, and other sample data. You can explore it without setting up a database server. Changes to the demo database persist between sessions.
 
-```bash
-npm run dev
-# http://127.0.0.1:5173
-```
+To connect your own database, choose **Connections** in the toolbar, select a database engine, enter its connection details, and test the connection before saving it.
 
-桌面模式使用 Electron IPC 直接访问数据库，不依赖 HTTP 服务。浏览器模式仅用于本地开发，服务监听 `127.0.0.1:4321`。
+### Interface language
 
-## 已实现
+On first launch, the application currently defaults to Simplified Chinese. Open **系统设置** in the upper-right corner, then choose **English** under **界面语言 / Interface language**. Changes take effect immediately and are saved on the device.
 
-| 功能             | 范围                                                                                           |
-| ---------------- | ---------------------------------------------------------------------------------------------- |
-| 数据库连接       | MySQL / MariaDB、PostgreSQL、SQLite、MongoDB、Redis 的真实驱动                                 |
-| 云数据库         | 对应协议的主机连接；RDS、Supabase、Neon、Atlas、TiDB 等预设入口；TLS 校验证书                  |
-| 对象浏览         | 表、视图、集合、Redis 键；列表 / 图标显示；搜索；对象信息                                      |
-| 数据浏览         | 分页、字段排序、全文搜索、按列多条件筛选（AND / OR）、MongoDB JSON 筛选                        |
-| SQL / 命令编辑   | 语法高亮、SQL 补全、选择语句执行、结果显示、历史、保存查询                                     |
-| 记录写入         | MySQL / PostgreSQL / SQLite 的新增、完整主键定位修改 / 删除；写操作确认                        |
-| 结构查看与关系图 | 字段、主键、外键、索引；数据库 ER 图                                                           |
-| 导入导出         | 关系型数据库 / 单表 SQL 导出及 SQL 文件导入，表 CSV 导入，CSV / JSON 结果导出，SQLite 文件备份 |
-| 结构比对         | 两个关系型表的字段类型、NULL、默认值、主键、索引和外键差异；新建表 / 新增字段 SQL 预览         |
-| 数据同步         | 同类型关系型表、按完整主键比较；新增 / 更新 / 可选删除；事务执行、变更重检、过期方案拒绝       |
-| 系统设置         | 中文 / English 即时切换；本设备保存语言偏好；桌面菜单和文件选择窗口随语言切换                  |
+Switching languages preserves open tabs, query text, and filters. Connection names, database identifiers, and stored data retain their original values. The desktop application and browser development preview store their language preferences separately.
 
-内置 `Commerce · 示例数据库` 为真实 SQLite 文件，包含客户、订单、商品等数据。示例数据库的修改会持久保留。
+## Everyday workflows
 
-## 系统设置与语言
+### Browse and filter data
 
-点击右上角 **系统设置**（英文界面为 **Settings**），在 **界面语言 / Interface language** 中选择 **简体中文** 或 **English**。选择后立即生效，无须重启或另外保存；再次打开应用时恢复上次选择，首次启动默认中文。
+Open a table or view and choose **Conditions** to combine up to 20 column conditions with AND or OR. Operators include equality, inequality, comparisons, contains, starts with, ends with, inclusive ranges, and NULL checks. Column filters can be combined with the search field.
 
-语言切换覆盖工具栏、连接窗口、右键菜单、对象浏览、查询、条件筛选、比对同步及导入导出界面；桌面端菜单和 SQLite 文件选择窗口也随语言切换。切换保留已打开标签、查询编辑内容和筛选条件；连接名称、数据库标识及实际数据保持原样。浏览器开发预览和桌面应用分别保存语言偏好。
+Relational filters run in the database and apply to row counts, sorting, and pagination. Column names are validated against the schema, values are bound as parameters, and `%` / `_` are treated as literal characters in contains matching.
 
-## 查询标签与条件筛选
+Right-click connections, databases, and tables for connection management, queries, schema inspection, import / export, comparison, synchronization, renaming, and deletion. The database menu includes **Delete database**, separately from **Delete connection profile** in the connection menu. Database deletion removes the database and all its data (the file for SQLite); the connection profile is retained. Redis uses **Empty database** to remove keys from the selected logical database. Deletion requires confirmation, and demo and system databases are protected.
 
-查询标签右侧的 × 可以关闭标签；有数据表标签时切换到数据表，否则返回对象列表。关闭其他最后一个标签时不会重新打开已经关闭的查询。
+### Compare schemas and synchronize data
 
-关系型表 / 视图的数据页点击 **条件筛选**，选择字段、运算符和值，通过 **添加条件** 组合最多 20 条条件；可选择全部满足（AND）或任意满足（OR），点击 **应用筛选** 执行。支持等于、不等于、大小比较、包含 / 不包含、开头 / 结尾、区间（含边界）和 NULL 判断。**清除条件** 撤销按列筛选；全文搜索可以和条件筛选一起使用。
+1. Add the source and target database connections.
+2. Open **Schema compare**, choose the source and target connections, then select their databases. MySQL and PostgreSQL support choosing different databases within the same connection.
+3. Select any number of tables, or use **Select all**. Same-name tables are matched automatically; review or change each target mapping. Missing target tables can be created using the generated schema SQL.
+4. Review per-table differences and the combined SQL. Use **Open all SQL in target query editor** to review and run the schema changes in the chosen target database.
+5. Open **Data sync**, select databases and tables using the same database engine with matching columns, types, and primary keys. Review each table's differences and confirm **Synchronize all selected tables**. Extra target records are retained unless deletion is explicitly enabled.
 
-筛选在数据库端执行并作用于总数、排序及分页。列名根据数据库结构校验，筛选值通过参数绑定传递；包含匹配中的 `%`、`_` 按普通字符处理。
+Synchronization supports up to **500 selected tables** per batch, with a limit of **10,000 rows / 8 MiB per table**. Plans expire after **10 minutes**. The application rechecks all selected tables' data and schema fingerprints before applying any writes and cancels if either side has changed. All target writes use one transaction. Parent tables are written before child tables, and child records are deleted before parent records. MySQL targets must use InnoDB. Constraint failures roll back the entire batch, including writes to earlier tables.
 
-## 比对与同步
+Schema SQL generation covers new tables and new ordinary columns. Dropping columns, altering types, or rebuilding indexes and foreign keys requires manual SQL. Cross-engine schema mapping produces a preliminary script that needs review for precision, length, time zones, generated values, defaults, and constraints. Data synchronization requires the same database engine. Cyclic dependencies and foreign keys crossing schemas or referring to unselected tables may need manual handling.
 
-1. 用顶部 **连接** 添加目标数据库（可以填写另一个 SQLite 文件路径）。
-2. 用顶部 **结构比对** 选择源连接 / 表和目标连接 / 表。不存在的目标表可填写新表名。
-3. 检查差异和 SQL；点击 **在目标查询编辑器打开**，审阅后执行结构变更。
-4. 用顶部 **数据同步** 比对两个字段名称 / 类型及主键一致的表。
-5. 逐条检查新增和更新；默认保留目标额外记录；确认后执行。
+### Import and export SQL
 
-数据同步首版针对**同类型数据库的单表**，每个表最多 10,000 行 / 8 MB。比较方案有效期 10 分钟。执行前再次计算数据和结构指纹；源或目标变化时取消。MySQL 目标必须为 InnoDB。关系型导入 / 同步由客户端管理事务；查询编辑器暂不接受手动事务控制。
+Use **Import SQL** / **Export SQL** in the toolbar or the object browser context menu to transfer relational schema and data.
 
-结构 SQL 生成有意限制为新建表和新增普通字段，不自动删除、修改类型、重建索引或外键。跨引擎类型映射仅提供初步脚本，需要核对精度、长度、时区、自增 / identity、默认表达式及约束。数据同步不跨引擎，不处理多表依赖顺序；外键约束冲突会回滚。
+| Operation  | Current limits                          |
+| ---------- | --------------------------------------- |
+| SQL export | 10,000 rows per table; 20 MiB per file. |
+| SQL import | 20 MiB per file; 50,000 statements.     |
 
-## MongoDB 与 Redis
+SQLite exports support tables, data, views, indexes, and triggers. PostgreSQL exports support ordinary tables, column types, primary keys, constraints, indexes, serial / identity columns, and views. MySQL exports use `SHOW CREATE` for table and view definitions.
 
-MongoDB 使用 JSON 命令：
+Database users, permissions, functions, procedures, extensions, custom types, and complex dependencies are outside the current export scope. Use native database backup tools when you need a complete backup.
+
+SQLite and PostgreSQL imports run in transactions; SQLite checks foreign keys before committing. MySQL DDL can commit implicitly, so a failed import may leave completed schema changes in place. The import preview explains this behavior. The target must be empty or compatible with the script; imports do not automatically drop existing tables.
+
+Manual transaction statements, database switching, and MySQL `DELIMITER` / procedure imports are not supported in SQL files. Transactions for imports and synchronization are managed by the application; the query editor also does not accept manual transaction control.
+
+### MongoDB commands
+
+Enter a JSON command in the query editor:
 
 ```json
 {
@@ -79,49 +121,103 @@ MongoDB 使用 JSON 命令：
 }
 ```
 
-支持 `find`、`count`、`aggregate`、`insertOne`、`updateOne`、`deleteOne`。聚合暂不支持 `$out` / `$merge`。Atlas 使用连接 URI 和数据库名称。
+Supported operations are `find`, `count`, `aggregate`, `insertOne`, `updateOne`, and `deleteOne`. Aggregation does not support `$out` or `$merge`. For MongoDB Atlas, provide the connection URI and database name.
 
-Redis 支持标准命令或 JSON 参数数组：
+### Redis commands
+
+Enter a command as text:
 
 ```text
 GET customer:1
+```
+
+Or use a JSON argument array:
+
+```json
 ["SET", "customer:1", "hello world"]
 ```
 
-首版屏蔽订阅、事务、连接控制和全库清空等命令。键列表最多 2,000 个，使用 SCAN 获取。集合 / Redis 的编辑使用命令编辑器。
+Subscription, transaction, connection-control, and full-database clearing commands are currently restricted. The key browser uses `SCAN` and lists up to 2,000 keys. MongoDB and Redis writes use the command editor.
 
-## SQL 文件与右键菜单
+## Local storage and operating limits
 
-顶部“导入 SQL / 导出 SQL”提供当前数据库的结构和数据导入导出；左侧连接、数据库和表右键菜单提供连接管理、查询、结构查看、SQL 导出、SQL / CSV 导入、比对与同步、重命名及删除对象。删除对象必须确认。
+- **Connection storage:** desktop configuration is stored in Electron's `userData` directory. When system encryption is available, configuration is encrypted with `safeStorage`. Otherwise, passwords and connection URIs are not persisted. Browser development mode never persists passwords or connection URIs.
+- **Desktop isolation:** passwords and connection URIs are excluded from connection details returned to the renderer. Context isolation and sandboxing are enabled, renderer Node.js integration is disabled, and IPC calls are checked against the application window.
+- **SQLite files:** SQLStudio uses `sql.js` to load a file into memory and persist changes through atomic replacement. Avoid concurrent writes from other applications. External file changes trigger fingerprint checks that block overwrites; nonempty WAL files block opening or overwriting until other writers are closed and a checkpoint is completed. A connection invalidated by a file conflict will not retry saving at shutdown.
+- **Query results:** SQL results display up to 1,000 rows. Remote drivers may still fetch the full result into memory, so include an explicit `LIMIT` when querying large datasets.
+- **Query storage:** history and saved queries remain in local renderer storage. Sensitive values written into query text are retained as part of that text.
 
-SQL 导出首版每表最多 10,000 行、文件总计 20 MB；SQL 导入最多 20 MB / 50,000 条语句。SQLite 支持表、数据、视图、索引和触发器；PostgreSQL 普通表支持字段类型、主键、约束、索引、serial / identity 和视图；MySQL 使用 SHOW CREATE 获取表 / 视图定义。数据库用户、权限、函数、过程、扩展、自定义类型及复杂依赖不属于当前导出范围，需要使用原生备份工具。
+## Development
 
-SQLite / PostgreSQL 导入在事务中执行，SQLite 提交前检查外键。MySQL DDL 存在隐式提交，失败可能留下已完成的结构变更；导入预览明确提示。SQL 文件中的手动事务、切换数据库、MySQL DELIMITER / 过程导入暂不支持。导入目标需要为空或与脚本兼容，不会自动删除现有表。
-
-## 存储与边界
-
-- 桌面端配置存放于 Electron `userData`。系统加密可用时通过 `safeStorage` 保存配置；不可用时不持久保存密码与 URI。浏览器开发模式始终不持久保存密码与 URI。
-- 连接配置不向渲染进程返回密码或 URI；桌面端开启 context isolation、sandbox，关闭 renderer Node integration；IPC 校验调用窗口。
-- SQLite 采用 sql.js 加载本地文件，内存执行后原子替换文件；**不适合与其他程序同时写同一文件**。外部修改会触发指纹检查并阻止覆盖；非空 WAL 日志会阻止打开或覆盖，请先关闭其他程序并完成 checkpoint。文件冲突后的连接失效，不会在关闭应用时重试写入。
-- SQL 结果最多显示 1,000 行。远程驱动查询仍可能读取整个结果到内存，因此大结果应在 SQL 中明确使用 LIMIT。
-- 查询历史和已保存查询存于本设备渲染器存储，不包含连接密码；用户写入 SQL 的敏感内容会作为查询文本保留。
-- Windows 安装包和 macOS 应用均可构建；对外发布仍需要发行签名 / notarization 以及 Windows 实机验证。
-
-## 构建与验证
+The browser preview runs the same interface with a local database service:
 
 ```bash
-npm test
-npm run build
-npm run pack:mac       # macOS arm64 / x64 DMG
-npm run pack:win       # Windows x64 NSIS 安装程序
+npm run dev
+# Open http://127.0.0.1:5173
 ```
 
-输出目录为 `release/`。跨平台 CI 在 `.github/workflows/build.yml` 中。
+The development service listens on `127.0.0.1:4321` and stores its data in `.sqlstudio/`. Desktop mode accesses the database service through Electron IPC and does not require an HTTP server. The browser preview is intended for local development.
 
-测试使用隔离的临时 SQLite 文件，覆盖真实查询、分页筛选、主键校验、导入回滚、持久化与备份、结构差异、数据同步、并发变更拒绝和失败回滚；语言测试覆盖回退、参数保留、错误消息双向切换及翻译占位符完整性。其他数据库驱动需要提供实库环境做集成测试。
+### Project structure
 
-## 后续范围
+```text
+electron/       Desktop lifecycle, menus, IPC, and preload bridge
+src/            React interface, components, styles, and client API
+server/         Database drivers, connection storage, filters, SQL files, and comparison
+shared/         Types, translations, and localization helpers
+tests/          Database service, filtering, import, sync, and localization tests
+scripts/        Development launcher and build helpers
+docs/           Screenshots and branding documentation
+public/         Application icon and static assets
+```
 
-函数管理、SSH 隧道、可视化表设计器、查询构建器、执行计划图、全库结构同步、大表流式 / 跨引擎同步、多表依赖调度、备份恢复、自动运行和 BI 尚未实现。对应顶部按钮明确禁用。
+### Validation
 
-功能参考：[Navicat 官方功能矩阵](https://www.navicat.com/en/products/navicat-premium-feature-matrix)。界面按用户截图组织，图标为独立实现。
+```bash
+npm run check
+npm test
+npm run build
+```
+
+Tests use isolated temporary SQLite files and cover queries, pagination, filtering, primary-key checks, import rollback, persistence, backups, schema comparison, synchronization, rejection of concurrent changes, and failure rollback. Localization tests cover fallback behavior, parameter preservation, message translation, and placeholder consistency. Integration testing for the other drivers requires actual database instances.
+
+### Desktop packaging
+
+```bash
+npm run pack:mac       # macOS DMG: Apple Silicon (arm64) and Intel (x64)
+npm run pack:win       # Windows NSIS installer: x64
+```
+
+Build artifacts are written to `release/`. The [GitHub Actions workflow](.github/workflows/build.yml) tests, builds, and packages on macOS and Windows and uploads the installers as workflow artifacts.
+
+Public distribution still requires release signing, macOS notarization, and validation on Windows hardware. Local packaging and CI artifacts should be treated as development builds.
+
+The shared application icon is `public/app-icon.png`; electron-builder generates platform-specific icon formats. Design sources and generation notes are in [the branding documentation](docs/app-icon.md).
+
+## Contributing
+
+Contributions are welcome, including database compatibility reports, UI improvements, translations, documentation, and tests.
+
+1. Open an issue describing the bug or proposed change. For bugs, include your operating system, database engine and version, reproduction steps, and expected behavior. Remove credentials and private data from logs or screenshots.
+2. For substantial changes, discuss the scope in an issue before implementation.
+3. Create a branch and keep the change focused. Add or update relevant tests for behavior changes.
+4. Run `npm run check`, `npm test`, and `npm run build`, then submit a pull request describing the change and how you verified it.
+
+## Roadmap
+
+Areas for future work include:
+
+- SSH tunnels and broader database integration testing.
+- Visual table design, query building, and execution-plan visualization.
+- Function and procedure management.
+- Automatic migrations for column changes, indexes, foreign keys, and cyclic dependencies.
+- Streaming synchronization for large tables and cross-engine data transfer.
+- Broader backup / restore, automation, and BI workflows.
+
+These capabilities are not implemented yet; related toolbar actions are disabled.
+
+## License
+
+SQLStudio is released under the [MIT License](LICENSE).
+
+Copyright © 2026 SQLStudio contributors.

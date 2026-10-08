@@ -144,6 +144,8 @@ export default function App() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [activeId, setActiveId] = useState("demo");
   const [objects, setObjects] = useState<DbObject[]>([]);
+  const [databaseNames, setDatabaseNames] = useState<string[]>([]);
+  const [activeDatabase, setActiveDatabase] = useState("");
   const [tabs, setTabs] = useState<DbObject[]>([]);
   const [route, setRoute] = useState("objects");
   const [queryOpened, setQueryOpened] = useState(false);
@@ -220,9 +222,12 @@ export default function App() {
   const activeRef = useRef("demo");
   const loadToken = useRef(0);
   const tableToken = useRef(0);
-  const connection = connections.find((c) => c.id === activeId);
+  const savedConnection = connections.find((c) => c.id === activeId);
+  const connection = savedConnection
+    ? { ...savedConnection, database: activeDatabase }
+    : undefined;
   const object = tabs.find((o) => objectKey(o) === route);
-  const connected = !!connection?.connected;
+  const connected = !!connection?.connected && loadingConnection !== activeId;
   const notify = useCallback(
     (text: string, error = false) => setToast({ text, error }),
     [],
@@ -254,20 +259,30 @@ export default function App() {
     setSelected([]);
     setView("data");
   };
-  async function activate(c: Connection) {
-    const token = ++loadToken.current;
-    activeRef.current = c.id;
-    setActiveId(c.id);
-    setLoadingConnection(c.id);
+  function resetDatabaseWorkspace() {
+    ++tableToken.current;
     setObjects([]);
     setTabs([]);
     setRoute("objects");
     setInfo(emptyInfo);
     setData({ ...empty, total: 0, page: 1, pageSize: 50 });
     setSchemas({});
+    setCompareObject(undefined);
+    setContext(null);
+    setModal(null);
+    setSqlFile(null);
     resetTable();
     setQueryResult(empty);
     setQueryError("");
+  }
+  async function activate(c: Connection) {
+    const token = ++loadToken.current;
+    activeRef.current = c.id;
+    setActiveId(c.id);
+    setLoadingConnection(c.id);
+    setDatabaseNames([]);
+    setActiveDatabase(c.database);
+    resetDatabaseWorkspace();
     if (c.engine === "mongodb")
       setQueryText(
         '{\n  "collection": "customers",\n  "operation": "find",\n  "filter": {},\n  "limit": 100\n}',
@@ -277,12 +292,40 @@ export default function App() {
       setQueryText("-- 使用 ⌘ / Ctrl + Enter 执行查询\nSELECT 1 AS connected;");
     try {
       const result = await api.connect(c);
+      const catalog = await api.databases(c.id);
       const list = await api.objects(c.id);
       if (token !== loadToken.current) return;
       setVersion(result.version);
+      setDatabaseNames(catalog.names);
+      setActiveDatabase(catalog.selected);
       setObjects(list);
       setRoute("objects");
       await refreshConnections();
+    } catch (error) {
+      if (token === loadToken.current) notify((error as Error).message, true);
+    } finally {
+      if (token === loadToken.current) setLoadingConnection("");
+    }
+  }
+  async function selectDatabase(database: string) {
+    if (
+      !connection ||
+      database === activeDatabase ||
+      loadingConnection ||
+      busy ||
+      queryBusy
+    )
+      return;
+    const currentId = activeId;
+    const token = ++loadToken.current;
+    setLoadingConnection(currentId);
+    try {
+      await api.selectDatabase(currentId, database);
+      if (token !== loadToken.current) return;
+      setActiveDatabase(database);
+      resetDatabaseWorkspace();
+      const list = await api.objects(currentId);
+      if (token === loadToken.current) setObjects(list);
     } catch (error) {
       if (token === loadToken.current) notify((error as Error).message, true);
     } finally {
@@ -402,9 +445,16 @@ export default function App() {
   }
   async function refreshObjects() {
     if (!connected) return;
+    const token = loadToken.current;
     try {
-      setObjects(await api.objects(activeId));
-      if (object) await loadTable();
+      const catalog = await api.databases(activeId);
+      const list = await api.objects(activeId);
+      if (token !== loadToken.current) return;
+      if (catalog.selected !== activeDatabase) resetDatabaseWorkspace();
+      setActiveDatabase(catalog.selected);
+      setDatabaseNames(catalog.names);
+      setObjects(list);
+      if (object && catalog.selected === activeDatabase) await loadTable();
       notify(t("数据库对象已刷新"));
     } catch (e) {
       notify((e as Error).message, true);
@@ -413,6 +463,7 @@ export default function App() {
   async function runQuery() {
     if (!connection || queryBusy) return;
     const currentId = activeId;
+    const token = loadToken.current;
     const selection = editorRef.current?.state.selection.main;
     const text =
       selection && !selection.empty
@@ -425,10 +476,19 @@ export default function App() {
     const started = performance.now();
     try {
       result = await api.query(currentId, text);
-      if (activeRef.current === currentId) {
+      if (activeRef.current === currentId && token === loadToken.current) {
+        const catalog = await api.databases(currentId);
+        const list = await api.objects(currentId);
+        if (token !== loadToken.current) return;
+        if (catalog.selected !== activeDatabase) {
+          resetDatabaseWorkspace();
+          setRoute("query");
+        }
+        setActiveDatabase(catalog.selected);
+        setDatabaseNames(catalog.names);
         setQueryResult(result);
         setQuerySelected([]);
-        setObjects(await api.objects(currentId));
+        setObjects(list);
         notify(
           result.columns.length
             ? t("查询完成 · {0} 行{1}", [
@@ -440,7 +500,8 @@ export default function App() {
       }
     } catch (e) {
       error = (e as Error).message;
-      if (activeRef.current === currentId) setQueryError(error);
+      if (activeRef.current === currentId && token === loadToken.current)
+        setQueryError(error);
     } finally {
       setHistory((h) =>
         [
@@ -770,6 +831,129 @@ export default function App() {
       sqlTargetRef.current = c;
       sqlImportRef.current?.click();
     };
+    const openDatabase = async () => {
+      if (c.id !== activeId) await activate(c);
+      if (["mysql", "postgres"].includes(c.engine)) {
+        await api.selectDatabase(c.id, c.database);
+        resetDatabaseWorkspace();
+        setActiveDatabase(c.database);
+        setObjects(await api.objects(c.id));
+      }
+    };
+    if (context.kind === "database")
+      return [
+        {
+          label: t("打开数据库"),
+          icon: <Database size={14} />,
+          action: () =>
+            void openDatabase().catch((e) => notify(e.message, true)),
+        },
+        {
+          label: t("结构比对…"),
+          icon: <Layers size={14} />,
+          disabled: !relational,
+          action: () =>
+            void openDatabase()
+              .then(() => {
+                setCompareObject(undefined);
+                setRoute("structure");
+              })
+              .catch((e) => notify(e.message, true)),
+        },
+        {
+          label: t("数据同步…"),
+          icon: <RefreshCw size={14} />,
+          disabled: !relational,
+          action: () =>
+            void openDatabase()
+              .then(() => {
+                setCompareObject(undefined);
+                setRoute("sync");
+              })
+              .catch((e) => notify(e.message, true)),
+        },
+        {
+          label: t("导出数据库 SQL…"),
+          icon: <ArrowDownToLine size={14} />,
+          disabled: !relational,
+          separator: true,
+          action: () =>
+            void openDatabase()
+              .then(() => exportSql(c))
+              .catch((e) => notify(e.message, true)),
+        },
+        {
+          label: t("导入 SQL 文件…"),
+          icon: <ArrowUpFromLine size={14} />,
+          disabled: !relational,
+          action: () =>
+            void openDatabase()
+              .then(importSQL)
+              .catch((e) => notify(e.message, true)),
+        },
+        {
+          label: c.engine === "redis" ? t("清空数据库…") : t("删除数据库…"),
+          icon: <Trash2 size={14} />,
+          danger: true,
+          separator: true,
+          disabled:
+            c.id === "demo" ||
+            !c.database ||
+            (c.engine === "mysql" &&
+              [
+                "mysql",
+                "sys",
+                "information_schema",
+                "performance_schema",
+              ].includes(c.database.toLowerCase())) ||
+            (c.engine === "postgres" &&
+              ["postgres", "template0", "template1"].includes(
+                c.database.toLowerCase(),
+              )) ||
+            (c.engine === "mongodb" &&
+              ["admin", "config", "local"].includes(c.database.toLowerCase())),
+          action: () => {
+            setModalError("");
+            setModal({
+              kind: "confirm",
+              title: t(
+                c.engine === "redis" ? "清空数据库 {0}？" : "删除数据库 {0}？",
+                [c.database],
+              ),
+              danger: true,
+              description: t(
+                c.engine === "sqlite"
+                  ? "将永久删除「{0} / {1}」的数据库文件及全部数据。此操作无法在应用内撤销，连接配置将保留。"
+                  : c.engine === "redis"
+                    ? "将永久清空「{0} / {1}」中的全部键。此操作无法在应用内撤销，连接配置将保留。"
+                    : "将永久删除「{0} / {1}」数据库及其中的全部表和数据。此操作无法在应用内撤销，连接配置将保留。",
+                [c.name, c.database],
+              ),
+              action: async () => {
+                await api.dropDatabase(c.id, c.database);
+                const list = await refreshConnections();
+                if (c.id === activeId) {
+                  if (c.engine === "sqlite") await activate(list[0]);
+                  else if (c.engine === "postgres")
+                    await activate(
+                      list.find((item) => item.id === c.id) ?? list[0],
+                    );
+                  else {
+                    const catalog = await api.databases(c.id);
+                    resetDatabaseWorkspace();
+                    setActiveDatabase(catalog.selected);
+                    setDatabaseNames(catalog.names);
+                    setObjects(await api.objects(c.id));
+                  }
+                }
+                notify(
+                  t(c.engine === "redis" ? "数据库已清空" : "数据库已删除"),
+                );
+              },
+            });
+          },
+        },
+      ];
     if (o)
       return [
         {
@@ -1034,7 +1218,11 @@ export default function App() {
       </header>
       <DesktopToolbar
         active={route}
-        onNavigate={setRoute}
+        onNavigate={(next) => {
+          if (next === "structure" || next === "sync")
+            setCompareObject(undefined);
+          setRoute(next);
+        }}
         onConnection={() => setConnectionDialog(null)}
         onBackup={() => void backup()}
         onImport={() => importRef.current?.click()}
@@ -1129,97 +1317,134 @@ export default function App() {
                   </div>
                   {c.id === activeId && c.connected && (
                     <div className="database-tree">
-                      <div
-                        className="database-name"
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setContext({
-                            kind: "database",
-                            connection: c,
-                            x: e.clientX,
-                            y: e.clientY,
-                          });
-                        }}
-                      >
-                        <ChevronDown size={12} />
-                        <Database size={14} />
-                        <span>{c.database || t("默认数据库")}</span>
-                        <span className="tree-count">{objects.length}</span>
-                      </div>
-                      <div className="object-group-label">
-                        <ChevronDown size={12} />
-                        <FolderClosed size={13} />
-                        {c.engine === "mongodb"
-                          ? t("集合")
-                          : c.engine === "redis"
-                            ? t("键")
-                            : t("数据表")}
-                        <span>{tables.length}</span>
-                      </div>
-                      {tables.map((o) => (
-                        <button
-                          className={`object-item ${objectKey(o) === route ? "active" : ""}`}
-                          key={objectKey(o)}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            setContext({
-                              kind: "object",
-                              connection: c,
-                              object: o,
-                              x: e.clientX,
-                              y: e.clientY,
-                            });
-                          }}
-                          onClick={() => openObject(o)}
-                        >
-                          {o.type === "key" ? (
-                            <KeyRound size={14} />
-                          ) : o.type === "collection" ? (
-                            <Braces size={14} />
-                          ) : (
-                            <Table2 size={14} />
+                      {databaseNames.map((database) => (
+                        <div className="database-node" key={database}>
+                          <button
+                            className={`database-name ${database === activeDatabase ? "selected" : ""}`}
+                            onClick={
+                              ["mysql", "postgres"].includes(c.engine)
+                                ? () => void selectDatabase(database)
+                                : undefined
+                            }
+                            disabled={!!loadingConnection || busy || queryBusy}
+                            title={database || t("默认数据库")}
+                            aria-expanded={database === activeDatabase}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              setContext({
+                                kind: "database",
+                                connection: { ...c, database },
+                                x: e.clientX,
+                                y: e.clientY,
+                              });
+                            }}
+                          >
+                            {database === activeDatabase ? (
+                              <ChevronDown size={12} />
+                            ) : (
+                              <ChevronRight size={12} />
+                            )}
+                            <Database size={14} />
+                            <span className="database-label">
+                              {database || t("默认数据库")}
+                            </span>
+                            {database === activeDatabase && (
+                              <span className="tree-count">
+                                {objects.length}
+                              </span>
+                            )}
+                          </button>
+                          {database === activeDatabase && (
+                            <>
+                              <div className="object-group-label">
+                                <ChevronDown size={12} />
+                                <FolderClosed size={13} />
+                                {c.engine === "mongodb"
+                                  ? t("集合")
+                                  : c.engine === "redis"
+                                    ? t("键")
+                                    : t("数据表")}
+                                <span>{tables.length}</span>
+                              </div>
+                              {tables.map((o) => (
+                                <button
+                                  className={`object-item ${objectKey(o) === route ? "active" : ""}`}
+                                  key={objectKey(o)}
+                                  onContextMenu={(e) => {
+                                    e.preventDefault();
+                                    setContext({
+                                      kind: "object",
+                                      connection: { ...c, database },
+                                      object: o,
+                                      x: e.clientX,
+                                      y: e.clientY,
+                                    });
+                                  }}
+                                  onClick={() => openObject(o)}
+                                >
+                                  {o.type === "key" ? (
+                                    <KeyRound size={14} />
+                                  ) : o.type === "collection" ? (
+                                    <Braces size={14} />
+                                  ) : (
+                                    <Table2 size={14} />
+                                  )}
+                                  <span>{o.name}</span>
+                                  {c.engine === "postgres" &&
+                                    o.schema &&
+                                    o.schema !== "public" && (
+                                      <small>{o.schema}</small>
+                                    )}
+                                  {objectKey(o) === route && (
+                                    <span className="object-active-dot" />
+                                  )}
+                                </button>
+                              ))}
+                              {!!views.length && (
+                                <>
+                                  <div className="object-group-label view-label">
+                                    <ChevronDown size={12} />
+                                    <Layers size={13} />
+                                    {t("视图")}
+                                    <span>{views.length}</span>
+                                  </div>
+                                  {views.map((o) => (
+                                    <button
+                                      className={`object-item ${objectKey(o) === route ? "active" : ""}`}
+                                      key={objectKey(o)}
+                                      onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        setContext({
+                                          kind: "object",
+                                          connection: { ...c, database },
+                                          object: o,
+                                          x: e.clientX,
+                                          y: e.clientY,
+                                        });
+                                      }}
+                                      onClick={() => openObject(o)}
+                                    >
+                                      <LayoutGrid size={14} />
+                                      <span>{o.name}</span>
+                                    </button>
+                                  ))}
+                                </>
+                              )}
+                              {!objects.length && (
+                                <p className="tree-empty">
+                                  {t("暂无数据库对象")}
+                                </p>
+                              )}
+                            </>
                           )}
-                          <span>{o.name}</span>
-                          {o.schema && o.schema !== "public" && (
-                            <small>{o.schema}</small>
-                          )}
-                          {objectKey(o) === route && (
-                            <span className="object-active-dot" />
-                          )}
-                        </button>
+                        </div>
                       ))}
-                      {!!views.length && (
-                        <>
-                          <div className="object-group-label view-label">
-                            <ChevronDown size={12} />
-                            <Layers size={13} />
-                            {t("视图")}
-                            <span>{views.length}</span>
-                          </div>
-                          {views.map((o) => (
-                            <button
-                              className={`object-item ${objectKey(o) === route ? "active" : ""}`}
-                              key={objectKey(o)}
-                              onContextMenu={(e) => {
-                                e.preventDefault();
-                                setContext({
-                                  kind: "object",
-                                  connection: c,
-                                  object: o,
-                                  x: e.clientX,
-                                  y: e.clientY,
-                                });
-                              }}
-                              onClick={() => openObject(o)}
-                            >
-                              <LayoutGrid size={14} />
-                              <span>{o.name}</span>
-                            </button>
-                          ))}
-                        </>
-                      )}
-                      {!objects.length && (
-                        <p className="tree-empty">{t("暂无数据库对象")}</p>
+                      {c.engine === "mysql" && !activeDatabase && (
+                        <p className="tree-empty">
+                          {databaseNames.length
+                            ? t("请选择数据库")
+                            : t("暂无可访问的数据库")}
+                        </p>
                       )}
                     </div>
                   )}
@@ -1283,7 +1508,7 @@ export default function App() {
             <div className="sidebar-footer">
               <span className="online-dot" />
               <AppIcon size={18} />
-              SQLStudio <span>v0.1.0</span>
+              SQLStudio <span>v0.1.3</span>
             </div>
           </div>
         </aside>
@@ -1467,6 +1692,22 @@ export default function App() {
                     </span>
                   ))}
                 </div>
+              </div>
+            ) : connection?.engine === "mysql" &&
+              !activeDatabase &&
+              ["objects", "views", "model", "structure", "sync"].includes(
+                route,
+              ) ? (
+              <div className="disconnected-state">
+                <div className="hero-db">
+                  <Database size={34} />
+                </div>
+                <h1>{t("请选择数据库")}</h1>
+                <p>
+                  {databaseNames.length
+                    ? t("在左侧选择数据库，查看其中的数据表和视图。")
+                    : t("暂无可访问的数据库")}
+                </p>
               </div>
             ) : ["objects", "views"].includes(route) && connection ? (
               <ObjectBrowser
@@ -2124,18 +2365,26 @@ export default function App() {
                 mode={route === "structure" ? "structure" : "data"}
                 connections={connections}
                 activeId={activeId}
+                activeDatabase={activeDatabase}
                 initialObject={compareObject}
-                onQuery={(targetId, text) => {
-                  const target = connections.find((c) => c.id === targetId);
-                  if (target && targetId !== activeId) {
-                    void activate(target).then(() => {
-                      setQueryText(text);
-                      setRoute("query");
-                    });
-                  } else {
+                onQuery={(scope, text) => {
+                  const target = connections.find(
+                    (c) => c.id === scope.connectionId,
+                  );
+                  if (!target) return;
+                  void (async () => {
+                    if (target.id !== activeId) await activate(target);
+                    if (["mysql", "postgres"].includes(target.engine)) {
+                      await api.selectDatabase(target.id, scope.database);
+                      resetDatabaseWorkspace();
+                      const catalog = await api.databases(target.id);
+                      setActiveDatabase(catalog.selected);
+                      setDatabaseNames(catalog.names);
+                      setObjects(await api.objects(target.id));
+                    }
                     setQueryText(text);
                     setRoute("query");
-                  }
+                  })().catch((e) => notify(e.message, true));
                 }}
                 onRefresh={() => void refreshConnections()}
               />
@@ -2349,7 +2598,7 @@ export default function App() {
               </span>
               <span>UTF-8</span>
               <span className="status-separator" />
-              <span>SQLStudio 0.1.0</span>
+              <span>SQLStudio 0.1.3</span>
             </div>
           </footer>
         </main>

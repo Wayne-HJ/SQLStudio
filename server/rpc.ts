@@ -26,6 +26,12 @@ const object = z.object({
   keyType: z.string().optional(),
 });
 const record = z.record(z.string(), z.unknown());
+const database = z.string().min(1).max(500);
+const scope = z.object({ connectionId: id, database }).strict();
+const tablePairs = z
+  .array(z.object({ source: object, target: object }).strict())
+  .min(1)
+  .max(500);
 const definitions = {
   connections: z.tuple([]),
   saveConnection: z.tuple([connection]),
@@ -33,6 +39,10 @@ const definitions = {
   connect: z.tuple([connection]),
   disconnect: z.tuple([id]),
   test: z.tuple([connection]),
+  databases: z.tuple([id]),
+  selectDatabase: z.tuple([id, z.string().min(1).max(500)]),
+  dropDatabase: z.tuple([id, database]),
+  databaseObjects: z.tuple([scope]),
   objects: z.tuple([id]),
   schema: z.tuple([id, object]),
   table: z.tuple([
@@ -88,6 +98,9 @@ const definitions = {
   compareSchemas: z.tuple([id, id, object, object]),
   compareData: z.tuple([id, id, object, object]),
   applySync: z.tuple([id, z.boolean()]),
+  compareDatabaseSchemas: z.tuple([scope, scope, tablePairs]),
+  compareDatabaseData: z.tuple([scope, scope, tablePairs]),
+  applyDatabaseSync: z.tuple([id, z.boolean()]),
 };
 export function createDispatcher(service: DatabaseService) {
   const queues = new Map<string, Promise<unknown>>();
