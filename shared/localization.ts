@@ -16,6 +16,9 @@ const reverse = new Map(
 const escapeRegex = (text: string) =>
   text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function pattern(text: string) {
+  // Templates made entirely of placeholders cannot identify a UI message.
+  // In particular, "{0} {1}" would match any driver error containing a space.
+  if (!normalize(text).replace(/\{\d+\}/g, "").trim()) return undefined;
   const parts = normalize(text).split(/(\{\d+\})/);
   const indices: number[] = [];
   const expression = parts
@@ -59,6 +62,7 @@ export function translate(
   if (source) return language === "en" ? englishMessages[source] : source;
   for (const entry of patterns) {
     for (const candidate of [entry.sourcePattern, entry.englishPattern]) {
+      if (!candidate) continue;
       const match = candidate.regex.exec(message.trim());
       if (!match) continue;
       const parameters: string[] = [];

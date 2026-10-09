@@ -18,7 +18,13 @@ import { compareRows } from "./compare.js";
 import { splitSql, stripComments, sqlLiteral } from "./sql-files.js";
 import { buildTableFilter } from "./table-filter.js";
 import { ConnectionStore } from "./store.js";
-import { seedDemo } from "./demo.js";
+import { normalizeRedisConnection } from "../shared/redis.js";
+import {
+  redisClientOptions,
+  redisDatabaseIndex,
+  redisDatabases,
+  redisMetadataUnavailable,
+} from "./redis.js";
 import type {
   Connection,
   DbObject,
@@ -42,24 +48,13 @@ interface Session {
   version: string;
   sqliteHash?: string;
   sqliteInvalidated?: boolean;
+  redisCatalog?: { names: string[]; notice?: string };
 }
 interface SyncEntry {
   plan: SyncPlan;
   sourceHash: string;
   targetHash: string;
 }
-export const demoConnection: Connection = {
-  id: "demo",
-  name: "Commerce · 示例数据库",
-  engine: "sqlite",
-  host: "",
-  port: 0,
-  database: "commerce.db",
-  username: "",
-  ssl: false,
-  color: "#5b7cfa",
-  environment: "local",
-};
 export class DatabaseService {
   private sessions = new Map<string, Session>();
   private transient = new Map<string, Connection>();
@@ -69,16 +64,14 @@ export class DatabaseService {
     { plan: DatabaseSyncPlan; entries: SyncEntry[] }
   >();
   constructor(
-    private directory: string,
+    directory: string,
     private store = new ConnectionStore(directory),
   ) {}
   async connections() {
-    return [demoConnection, ...(await this.store.list())].map((c) =>
-      this.publicConnection(c),
-    );
+    return (await this.store.list()).map((c) => this.publicConnection(c));
   }
   private publicConnection(c: Connection) {
-    const { password, uri, ...safe } = c;
+    const { password, uri, ...safe } = normalizeRedisConnection(c);
     return {
       ...safe,
       connected:
@@ -86,21 +79,31 @@ export class DatabaseService {
     };
   }
   async saveConnection(config: Connection) {
-    if (config.id === "demo") throw new Error("示例连接不能被覆盖");
     const existing = (await this.store.list()).find((c) => c.id === config.id);
     const previous = this.transient.get(config.id) ?? existing;
-    const merged = {
+    let merged = normalizeRedisConnection({
       ...config,
       password: config.password ?? previous?.password,
       uri: config.uri ?? previous?.uri,
-    };
+    });
+    if (merged.engine === "redis") {
+      const options = redisClientOptions(merged);
+      if (merged.redisConnectionMode === "uri")
+        merged = {
+          ...merged,
+          host: options.socket.host,
+          port: options.socket.port,
+          ssl: !!options.socket.tls,
+          database:
+            options.database === undefined ? "" : String(options.database),
+        };
+    }
     if (this.sessions.has(config.id)) await this.disconnect(config.id);
     this.transient.set(config.id, merged);
     await this.store.save(merged);
     return this.publicConnection(merged);
   }
   async removeConnection(id: string) {
-    if (id === "demo") throw new Error("示例连接不能删除");
     await this.disconnect(id);
     this.transient.delete(id);
     await this.store.remove(id);
@@ -119,8 +122,6 @@ export class DatabaseService {
       password: config.password ?? stored?.password,
       uri: config.uri ?? stored?.uri,
     };
-    if (config.id === "demo")
-      merged.filePath = path.join(this.directory, "commerce.db");
     const session = await this.open(merged);
     this.sessions.set(config.id, session);
     return { version: session.version };
@@ -161,6 +162,7 @@ export class DatabaseService {
     return session;
   }
   private async open(config: Connection): Promise<Session> {
+    config = normalizeRedisConnection(config);
     let client: any;
     let sqlite: Database | undefined;
     let version = "";
@@ -185,12 +187,6 @@ export class DatabaseService {
           sqlite = new SQL.Database(buffer);
           client = sqlite;
           sqlite.run("PRAGMA foreign_keys=ON;");
-          if (config.id === "demo" && !buffer) {
-            seedDemo(sqlite);
-            await fs.mkdir(this.directory, { recursive: true });
-            await fs.writeFile(filename!, sqlite.export());
-            buffer = Buffer.from(sqlite.export());
-          }
           if (buffer)
             sqliteHash = createHash("sha256").update(buffer).digest("hex");
           version = String(
@@ -253,26 +249,23 @@ export class DatabaseService {
           break;
         }
         case "redis": {
-          client = createClient({
-            socket: {
-              host: config.host,
-              port: config.port,
-              connectTimeout: 10000,
-              reconnectStrategy: false,
-              ...(config.ssl ? { tls: true as const } : {}),
-            },
-            username: config.username || undefined,
-            password: config.password || undefined,
-            database: Number(config.database) || 0,
-          });
+          const options = redisClientOptions(config);
+          client = createClient(options);
           client.on("error", () => {
             this.sessions.delete(config.id);
           });
           await client.connect();
-          version =
-            (await client.info("server")).match(
-              /redis_version:([^\r\n]+)/,
-            )?.[1] ?? "Redis";
+          await client.ping();
+          config = { ...config, database: String(options.database ?? 0) };
+          version = "Redis";
+          try {
+            version =
+              (await client.info("server")).match(
+                /redis_version:([^\r\n]+)/,
+              )?.[1] ?? "Redis";
+          } catch (error) {
+            if (!redisMetadataUnavailable(error)) throw error;
+          }
           break;
         }
       }
@@ -413,6 +406,10 @@ export class DatabaseService {
   }
   async databases(id: string) {
     const s = this.get(id);
+    if (s.config.engine === "redis") {
+      s.redisCatalog ??= await redisDatabases(s.client, s.config.database);
+      return { ...s.redisCatalog, selected: s.config.database };
+    }
     if (s.config.engine === "postgres") {
       const names = (
         await this.sql(
@@ -439,6 +436,11 @@ export class DatabaseService {
   async selectDatabase(id: string, database: string) {
     const s = this.get(id);
     if (!database) throw new Error("请选择数据库");
+    if (s.config.engine === "redis") {
+      await s.client.select(redisDatabaseIndex(database)!);
+      s.config = { ...s.config, database: String(Number(database)) };
+      return;
+    }
     if (s.config.engine === "postgres") {
       const next = await this.open({ ...s.config, database });
       this.sessions.set(id, next);
@@ -479,7 +481,6 @@ export class DatabaseService {
   async dropDatabase(id: string, database: string) {
     const s = this.get(id);
     if (!database) throw new Error("请选择数据库");
-    if (id === "demo") throw new Error("示例数据库不能删除");
     if (s.config.engine === "mysql") {
       if (
         ["mysql", "information_schema", "performance_schema", "sys"].includes(
@@ -539,8 +540,6 @@ export class DatabaseService {
       if (database !== s.config.database || !s.config.filePath)
         throw new Error("请选择数据库");
       const filename = path.resolve(s.config.filePath);
-      if (filename === path.resolve(this.directory, "commerce.db"))
-        throw new Error("示例数据库不能删除");
       await this.assertSqliteFile(filename);
       const current = await fs.readFile(filename);
       if (createHash("sha256").update(current).digest("hex") !== s.sqliteHash)

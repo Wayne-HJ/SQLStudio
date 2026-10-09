@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import type { Connection, Engine } from "../../shared/types";
+import { redisAuthMode, redisConnectionMode } from "../../shared/redis";
 export const engines: {
   id: Engine;
   name: string;
@@ -140,6 +141,11 @@ export default function ConnectionDialog({
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [tested, setTested] = useState(false);
+  const redisUri =
+    config.engine === "redis" && redisConnectionMode(config) === "uri";
+  const redisAuth = redisAuthMode(config);
+  const usesTls =
+    redisUri && config.uri ? config.uri.startsWith("rediss://") : config.ssl;
   const patch = (p: Partial<Connection>) => {
     setConfig((c) => ({ ...c, ...p }));
     setTested(false);
@@ -153,7 +159,11 @@ export default function ConnectionDialog({
       name: name ?? t("我的 {0}", [e.name]),
       username:
         engine === "postgres" ? "postgres" : engine === "mysql" ? "root" : "",
-      database: engine === "redis" ? "0" : "",
+      database: "",
+      password: "",
+      uri: "",
+      redisAuth: engine === "redis" ? "none" : undefined,
+      redisConnectionMode: engine === "redis" ? "host" : undefined,
       host: name ? "" : "localhost",
       ssl: !!name,
       environment: name ? "production" : "local",
@@ -165,7 +175,12 @@ export default function ConnectionDialog({
     setMessage("");
     try {
       if (!config.name.trim()) throw new Error(t("请填写连接名称"));
-      if (config.engine !== "sqlite" && !config.host.trim() && !config.uri)
+      if (
+        config.engine !== "sqlite" &&
+        !redisUri &&
+        !config.host.trim() &&
+        !config.uri
+      )
         throw new Error(t("请填写主机地址或连接 URI"));
       if (test) {
         const result = await api.test(config);
@@ -273,7 +288,7 @@ export default function ConnectionDialog({
               <strong>
                 {engines.find((e) => e.id === config.engine)?.name}
               </strong>
-              <span>{config.ssl ? t("TLS 安全连接") : t("标准连接")}</span>
+              <span>{usesTls ? t("TLS 安全连接") : t("标准连接")}</span>
             </div>
             <div className="connection-form">
               <label>
@@ -335,64 +350,157 @@ export default function ConnectionDialog({
                       </small>
                     </label>
                   )}
-                  <div className="form-row host-row">
+                  {config.engine === "redis" && (
                     <label>
-                      {t("主机地址")}
-                      <input
-                        value={config.host}
-                        onChange={(e) => patch({ host: e.target.value })}
-                        placeholder={t("localhost 或云数据库地址")}
-                      />
-                    </label>
-                    <label>
-                      {t("端口")}
-                      <input
-                        type="number"
-                        value={config.port}
+                      {t("连接方式")}
+                      <select
+                        value={redisConnectionMode(config)}
                         onChange={(e) =>
-                          patch({ port: Number(e.target.value) })
+                          patch({
+                            redisConnectionMode: e.target.value as
+                              "host" | "uri",
+                          })
                         }
-                      />
+                      >
+                        <option value="host">{t("主机和端口")}</option>
+                        <option value="uri">{t("连接 URI")}</option>
+                      </select>
                     </label>
-                  </div>
-                  <div className="form-row">
+                  )}
+                  {redisUri ? (
                     <label>
-                      {t("用户名")}
-                      <input
-                        value={config.username}
-                        onChange={(e) => patch({ username: e.target.value })}
-                        autoComplete="off"
-                      />
-                    </label>
-                    <label>
-                      {t("密码")}
+                      {t("连接 URI")}
                       <input
                         type="password"
-                        value={config.password ?? ""}
-                        onChange={(e) => patch({ password: e.target.value })}
-                        placeholder={
-                          initial ? t("留空保留已有密码") : t("数据库密码")
-                        }
+                        value={config.uri ?? ""}
+                        onChange={(e) => patch({ uri: e.target.value })}
                         autoComplete="new-password"
+                        placeholder={
+                          initial
+                            ? t("留空保留已有 URI")
+                            : "redis://localhost:6379"
+                        }
                       />
+                      <small>
+                        {t(
+                          "支持 redis:// 和 rediss://；认证信息和数据库编号均可省略。",
+                        )}
+                      </small>
                     </label>
-                  </div>
-                  <label>
-                    {config.engine === "redis"
-                      ? t("数据库编号")
-                      : t("数据库名称")}
-                    <input
-                      value={config.database}
-                      onChange={(e) => patch({ database: e.target.value })}
-                      placeholder={
-                        config.engine === "redis"
-                          ? "0"
-                          : config.engine === "mysql"
-                            ? t("可留空，连接后选择数据库")
-                            : t("例如 commerce")
-                      }
-                    />
-                  </label>
+                  ) : (
+                    <>
+                      <div className="form-row host-row">
+                        <label>
+                          {t("主机地址")}
+                          <input
+                            value={config.host}
+                            onChange={(e) => patch({ host: e.target.value })}
+                            placeholder={t("localhost 或云数据库地址")}
+                          />
+                        </label>
+                        <label>
+                          {t("端口")}
+                          <input
+                            type="number"
+                            value={config.port}
+                            onChange={(e) =>
+                              patch({ port: Number(e.target.value) })
+                            }
+                          />
+                        </label>
+                      </div>
+                      {config.engine === "redis" && (
+                        <label>
+                          {t("认证方式")}
+                          <select
+                            value={redisAuth}
+                            onChange={(e) =>
+                              patch({
+                                redisAuth: e.target
+                                  .value as Connection["redisAuth"],
+                              })
+                            }
+                          >
+                            <option value="none">{t("无认证")}</option>
+                            <option value="password">{t("仅密码")}</option>
+                            <option value="acl">
+                              {t("用户名和密码（ACL）")}
+                            </option>
+                          </select>
+                        </label>
+                      )}
+                      {(config.engine !== "redis" || redisAuth !== "none") && (
+                        <div
+                          className={
+                            redisAuth === "password" &&
+                            config.engine === "redis"
+                              ? ""
+                              : "form-row"
+                          }
+                        >
+                          {(config.engine !== "redis" ||
+                            redisAuth === "acl") && (
+                            <label>
+                              {t("用户名")}
+                              <input
+                                value={config.username}
+                                onChange={(e) =>
+                                  patch({ username: e.target.value })
+                                }
+                                autoComplete="off"
+                              />
+                              {config.engine === "redis" && (
+                                <small>
+                                  {t("可留空，使用 default 用户。")}
+                                </small>
+                              )}
+                            </label>
+                          )}
+                          <label>
+                            {t("密码")}
+                            <input
+                              type="password"
+                              value={config.password ?? ""}
+                              onChange={(e) =>
+                                patch({ password: e.target.value })
+                              }
+                              placeholder={
+                                initial
+                                  ? t("留空保留已有密码")
+                                  : t("数据库密码")
+                              }
+                              autoComplete="new-password"
+                            />
+                            {config.engine === "redis" &&
+                              redisAuth === "acl" && (
+                                <small>{t("ACL 用户无需密码时可留空。")}</small>
+                              )}
+                          </label>
+                        </div>
+                      )}
+                      <label>
+                        {config.engine === "redis"
+                          ? t("默认数据库编号（可选）")
+                          : t("数据库名称")}
+                        <input
+                          value={config.database}
+                          onChange={(e) => patch({ database: e.target.value })}
+                          placeholder={
+                            config.engine === "redis"
+                              ? t("留空使用 0，连接后选择数据库")
+                              : config.engine === "mysql"
+                                ? t("可留空，连接后选择数据库")
+                                : t("例如 commerce")
+                          }
+                        />
+                        {config.engine === "redis" && (
+                          <small>
+                            {t("连接后显示全部可用数据库编号，包括空数据库。")}
+                          </small>
+                        )}
+                      </label>
+                    </>
+                  )}
                 </>
               )}
               <div className="form-row">
@@ -435,7 +543,7 @@ export default function ConnectionDialog({
                   </div>
                 </label>
               </div>
-              {config.engine !== "sqlite" && (
+              {config.engine !== "sqlite" && !redisUri && (
                 <label className="checkbox-label">
                   <input
                     type="checkbox"

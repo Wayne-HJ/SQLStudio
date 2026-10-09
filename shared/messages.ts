@@ -34,7 +34,6 @@ export const englishMessages: Record<string, string> = {
     "Permanently remove all keys from “{0} / {1}”. This cannot be undone in the app. The connection profile will be retained.",
   数据库已删除: "Database deleted",
   数据库已清空: "Database emptied",
-  示例数据库不能删除: "The demo database cannot be deleted",
   系统数据库不能删除: "System databases cannot be deleted",
   选择源数据库: "Select source database",
   选择目标数据库: "Select target database",
@@ -152,10 +151,7 @@ export const englishMessages: Record<string, string> = {
   编辑连接: "Edit connection",
   默认数据库: "Default database",
   暂无数据库对象: "No database objects",
-  探索示例工作空间: "Explore the sample workspace",
   数据库已就绪: "Database ready",
-  "这是一个真实的本地 SQLite 数据库。试试查询、编辑或导出数据。":
-    "This is a real local SQLite database. Try querying, editing or exporting data.",
   "所有查询直接运行在你的数据库上。":
     "All queries run directly on your database.",
   连接自己的数据库: "Connect your own database",
@@ -283,7 +279,7 @@ export const englishMessages: Record<string, string> = {
     "Omit fields with default or generated values. Saving writes to the database immediately.",
   新对象名称: "New object name",
   查询名称: "Query name",
-  "跨平台数据库工作空间 · 0.1.0": "Cross-platform database workspace · 0.1.0",
+  "跨平台数据库工作空间 · 0.1.4": "Cross-platform database workspace · 0.1.4",
   运行模式: "Runtime",
   "Electron 桌面端": "Electron desktop",
   浏览器开发预览: "Browser development preview",
@@ -417,6 +413,33 @@ export const englishMessages: Record<string, string> = {
   留空保留已有密码: "Leave blank to keep the saved password",
   数据库密码: "Database password",
   数据库编号: "Database number",
+  连接方式: "Connection method",
+  主机和端口: "Host and port",
+  "连接 URI": "Connection URI",
+  "留空保留已有 URI": "Leave blank to keep the saved URI",
+  "支持 redis:// 和 rediss://；认证信息和数据库编号均可省略。":
+    "Supports redis:// and rediss://; credentials and database number are optional.",
+  认证方式: "Authentication",
+  无认证: "No authentication",
+  仅密码: "Password only",
+  "用户名和密码（ACL）": "Username and password (ACL)",
+  "可留空，使用 default 用户。": "Optional; uses the default user when blank.",
+  "ACL 用户无需密码时可留空。":
+    "Leave blank if the ACL user requires no password.",
+  "默认数据库编号（可选）": "Default database number (optional)",
+  "留空使用 0，连接后选择数据库":
+    "Leave blank for 0; select a database after connecting",
+  "连接后显示全部可用数据库编号，包括空数据库。":
+    "All available database numbers, including empty databases, appear after connecting.",
+  "Redis 数据库编号必须是非负整数":
+    "The Redis database number must be a non-negative integer",
+  "请填写 Redis 连接 URI": "Enter a Redis connection URI",
+  "Redis 连接 URI 格式不正确，请使用 redis:// 或 rediss://":
+    "Invalid Redis connection URI; use redis:// or rediss://",
+  "无权读取完整数据库列表，仅显示当前数据库。请授予 CONFIG GET 或 SELECT 权限。":
+    "Unable to read the full database list. Only the current database is shown. Grant CONFIG GET or SELECT permission.",
+  "当前服务未提供完整数据库列表，仅显示当前数据库。":
+    "This service does not provide a complete database list. Only the current database is shown.",
   数据库名称: "Database name",
   "例如 commerce": "For example: commerce",
   环境: "Environment",
@@ -539,8 +562,6 @@ export const englishMessages: Record<string, string> = {
   未知操作: "Unknown operation",
   "参数格式不正确，请检查输入。": "Invalid parameter format. Check your input.",
   操作失败: "Operation failed",
-  示例连接不能被覆盖: "The sample connection cannot be overwritten",
-  示例连接不能删除: "The sample connection cannot be deleted",
   "SQLite 文件连接已失效，请重新连接数据库。":
     "The SQLite file connection is invalid. Reconnect to the database.",
   "SQLite 文件已被其他进程修改。已阻止覆盖，请断开后重新连接。":

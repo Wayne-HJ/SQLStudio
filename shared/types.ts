@@ -9,6 +9,8 @@ export interface Connection {
   username: string;
   password?: string;
   uri?: string;
+  redisAuth?: "none" | "password" | "acl";
+  redisConnectionMode?: "host" | "uri";
   filePath?: string;
   ssl: boolean;
   color: string;
@@ -167,7 +169,11 @@ export interface Api {
   connect(connection: Connection): Promise<{ version: string }>;
   disconnect(id: string): Promise<void>;
   test(connection: Connection): Promise<{ version: string }>;
-  databases(id: string): Promise<{ names: string[]; selected: string }>;
+  databases(id: string): Promise<{
+    names: string[];
+    selected: string;
+    notice?: string;
+  }>;
   selectDatabase(id: string, database: string): Promise<void>;
   dropDatabase(id: string, database: string): Promise<void>;
   databaseObjects(scope: DatabaseScope): Promise<DbObject[]>;

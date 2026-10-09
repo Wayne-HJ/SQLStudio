@@ -481,6 +481,9 @@ code {
 .object-group-label {
   display: flex;
   align-items: center;
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
   gap: 7px;
   padding-left: 41px;
   height: 30px;
@@ -585,32 +588,6 @@ code {
 }
 .sidebar-bottom {
   padding: 10px 14px 0;
-}
-.demo-note {
-  background: linear-gradient(115deg, #eef2ff, #f1f4fc);
-  border: 1px solid #e3e9f7;
-  border-radius: 7px;
-  padding: 12px;
-}
-.demo-note > span {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  font-weight: 600;
-  color: #7184bb;
-}
-.demo-note p {
-  font-size: 10px;
-  line-height: 1.8;
-  color: #949eb6;
-  margin: 6px 0 8px;
-}
-.demo-note button {
-  font-size: 10px;
-  color: #6582d7;
-  padding: 0;
-  gap: 15px;
 }
 .sidebar-footer {
   height: 42px;

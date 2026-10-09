@@ -31,9 +31,11 @@ SQLStudio is in early development. The features below are implemented, with the 
 | PostgreSQL      | Host, port, database, and credentials        | SQL queries, record editing, schema inspection, SQL import / export, comparison, and synchronization.              |
 | SQLite          | Local database file                          | SQL queries, record editing, schema inspection, SQL import / export, comparison, synchronization, and file backup. |
 | MongoDB         | Host and credentials, or a connection URI    | Collection browsing, JSON filters, and supported JSON commands.                                                    |
-| Redis           | Host, port, credentials, and database number | Key browsing and commands entered as text or JSON argument arrays.                                                 |
+| Redis           | Host and port, or a Redis URI; optional authentication and database number | Key browsing, logical database switching, and commands entered as text or JSON argument arrays. |
 
 Connection presets include Amazon RDS, Supabase, Neon, MongoDB Atlas, and TiDB Cloud. These use the corresponding database protocols and connection details. TLS connections validate server certificates.
+
+Redis connections support no authentication, password-only authentication, and ACL users, including users configured without a password. You can also enter a `redis://` or `rediss://` URI. Leave the database number blank to start in database 0; the sidebar lists all configured logical databases, including empty ones. If `CONFIG GET` is unavailable, SQLStudio discovers database numbers using a separate connection. Accounts that cannot read configuration or select databases see the current database with a permission notice.
 
 ## Quick start
 
@@ -59,7 +61,7 @@ npm ci
 npm run desktop
 ```
 
-The application includes a **Commerce** demo database backed by a real SQLite file, with customers, orders, products, and other sample data. You can explore it without setting up a database server. Changes to the demo database persist between sessions.
+The application starts with an empty connection list. Choose **Create your first connection** to connect your own database; no sample database is created or included.
 
 To connect your own database, choose **Connections** in the toolbar, select a database engine, enter its connection details, and test the connection before saving it.
 
@@ -77,7 +79,7 @@ Open a table or view and choose **Conditions** to combine up to 20 column condit
 
 Relational filters run in the database and apply to row counts, sorting, and pagination. Column names are validated against the schema, values are bound as parameters, and `%` / `_` are treated as literal characters in contains matching.
 
-Right-click connections, databases, and tables for connection management, queries, schema inspection, import / export, comparison, synchronization, renaming, and deletion. The database menu includes **Delete database**, separately from **Delete connection profile** in the connection menu. Database deletion removes the database and all its data (the file for SQLite); the connection profile is retained. Redis uses **Empty database** to remove keys from the selected logical database. Deletion requires confirmation, and demo and system databases are protected.
+Right-click connections, databases, and tables for connection management, queries, schema inspection, import / export, comparison, synchronization, renaming, and deletion. The database menu includes **Delete database**, separately from **Delete connection profile** in the connection menu. Database deletion removes the database and all its data (the file for SQLite); the connection profile is retained. Redis uses **Empty database** to remove keys from the selected logical database. Deletion requires confirmation, and system databases are protected.
 
 ### Compare schemas and synchronize data
 

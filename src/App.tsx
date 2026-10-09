@@ -1,5 +1,11 @@
 import { t } from "./i18n";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   Activity,
   ArrowDownToLine,
@@ -38,7 +44,6 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkles,
   Square,
   Table2,
   Terminal,
@@ -90,6 +95,10 @@ const empty: QueryResult = {
 };
 const emptyInfo: TableInfo = { columns: [], foreignKeys: [], indexes: [] };
 const objectKey = (o: DbObject) => `${o.schema ?? ""}.${o.name}`;
+const treeNodeKey = (id: string, database?: string, group?: string) =>
+  JSON.stringify([id, database, group]);
+const defaultQuery =
+  "-- 使用 ⌘ / Ctrl + Enter 执行查询\nSELECT 1 AS connected;";
 const storage = <T,>(key: string, fallback: T): T => {
   try {
     return JSON.parse(localStorage.getItem(key) ?? "null") ?? fallback;
@@ -142,10 +151,14 @@ export default function App() {
     void window.desktop?.setLanguage(getLanguage()).catch(() => {});
   }, []);
   const [connections, setConnections] = useState<Connection[]>([]);
-  const [activeId, setActiveId] = useState("demo");
+  const [activeId, setActiveId] = useState("");
   const [objects, setObjects] = useState<DbObject[]>([]);
   const [databaseNames, setDatabaseNames] = useState<string[]>([]);
   const [activeDatabase, setActiveDatabase] = useState("");
+  const [databaseNotice, setDatabaseNotice] = useState("");
+  const [collapsedTreeNodes, setCollapsedTreeNodes] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [tabs, setTabs] = useState<DbObject[]>([]);
   const [route, setRoute] = useState("objects");
   const [queryOpened, setQueryOpened] = useState(false);
@@ -181,9 +194,7 @@ export default function App() {
   const [queryBusy, setQueryBusy] = useState(false);
   const [loadingConnection, setLoadingConnection] = useState("");
   const [version, setVersion] = useState("");
-  const [queryText, setQueryText] = useState(
-    "-- 探索你的数据，从一条查询开始。\nSELECT\n  c.name,\n  c.company,\n  COUNT(o.id) AS order_count,\n  ROUND(SUM(o.total), 2) AS total_spent\nFROM customers c\nLEFT JOIN orders o ON c.id = o.customer_id\nGROUP BY c.id\nORDER BY total_spent DESC\nLIMIT 100;",
-  );
+  const [queryText, setQueryText] = useState(defaultQuery);
   const [queryResult, setQueryResult] = useState<QueryResult>(empty);
   const [queryError, setQueryError] = useState("");
   const [querySelected, setQuerySelected] = useState<number[]>([]);
@@ -219,7 +230,7 @@ export default function App() {
   } | null>(null);
   const [compareObject, setCompareObject] = useState<DbObject | undefined>();
   const editorRef = useRef<EditorView | null>(null);
-  const activeRef = useRef("demo");
+  const activeRef = useRef("");
   const loadToken = useRef(0);
   const tableToken = useRef(0);
   const savedConnection = connections.find((c) => c.id === activeId);
@@ -249,6 +260,24 @@ export default function App() {
     setConnections(list);
     return list;
   }
+  const isTreeNodeExpanded = (id: string, database?: string, group?: string) =>
+    !collapsedTreeNodes.has(treeNodeKey(id, database, group));
+  function toggleTreeNode(id: string, database?: string, group?: string) {
+    const key = treeNodeKey(id, database, group);
+    setCollapsedTreeNodes((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+  function expandTreeNode(id: string, database?: string) {
+    setCollapsedTreeNodes((previous) => {
+      const next = new Set(previous);
+      next.delete(treeNodeKey(id, database));
+      return next;
+    });
+  }
   const resetTable = () => {
     setPage(1);
     setFilter("");
@@ -275,21 +304,30 @@ export default function App() {
     setQueryResult(empty);
     setQueryError("");
   }
-  async function activate(c: Connection) {
+  async function activate(c?: Connection) {
     const token = ++loadToken.current;
-    activeRef.current = c.id;
-    setActiveId(c.id);
-    setLoadingConnection(c.id);
+    activeRef.current = c?.id ?? "";
+    setActiveId(c?.id ?? "");
+    setLoadingConnection(c?.id ?? "");
     setDatabaseNames([]);
-    setActiveDatabase(c.database);
+    setDatabaseNotice("");
+    setActiveDatabase(c?.database ?? "");
+    setVersion("");
     resetDatabaseWorkspace();
+    if (!c) {
+      setBusy(false);
+      setQueryBusy(false);
+      setQueryOpened(false);
+      setQueryText(defaultQuery);
+      return;
+    }
+    expandTreeNode(c.id);
     if (c.engine === "mongodb")
       setQueryText(
         '{\n  "collection": "customers",\n  "operation": "find",\n  "filter": {},\n  "limit": 100\n}',
       );
     else if (c.engine === "redis") setQueryText("PING");
-    else if (c.id !== "demo")
-      setQueryText("-- 使用 ⌘ / Ctrl + Enter 执行查询\nSELECT 1 AS connected;");
+    else setQueryText(defaultQuery);
     try {
       const result = await api.connect(c);
       const catalog = await api.databases(c.id);
@@ -297,6 +335,7 @@ export default function App() {
       if (token !== loadToken.current) return;
       setVersion(result.version);
       setDatabaseNames(catalog.names);
+      setDatabaseNotice(catalog.notice ?? "");
       setActiveDatabase(catalog.selected);
       setObjects(list);
       setRoute("objects");
@@ -323,6 +362,7 @@ export default function App() {
       await api.selectDatabase(currentId, database);
       if (token !== loadToken.current) return;
       setActiveDatabase(database);
+      expandTreeNode(currentId, database);
       resetDatabaseWorkspace();
       const list = await api.objects(currentId);
       if (token === loadToken.current) setObjects(list);
@@ -339,7 +379,7 @@ export default function App() {
       .then((list) => {
         if (mounted) {
           setConnections(list);
-          void activate(list[0]);
+          if (list[0]) void activate(list[0]);
         }
       })
       .catch((e) => notify(e.message, true));
@@ -833,7 +873,7 @@ export default function App() {
     };
     const openDatabase = async () => {
       if (c.id !== activeId) await activate(c);
-      if (["mysql", "postgres"].includes(c.engine)) {
+      if (["mysql", "postgres", "redis"].includes(c.engine)) {
         await api.selectDatabase(c.id, c.database);
         resetDatabaseWorkspace();
         setActiveDatabase(c.database);
@@ -897,7 +937,6 @@ export default function App() {
           danger: true,
           separator: true,
           disabled:
-            c.id === "demo" ||
             !c.database ||
             (c.engine === "mysql" &&
               [
@@ -1087,7 +1126,6 @@ export default function App() {
         label: t("编辑连接…"),
         icon: <Settings2 size={14} />,
         action: () => setConnectionDialog(c),
-        disabled: c.id === "demo",
       },
       {
         label: t("新建查询"),
@@ -1149,7 +1187,6 @@ export default function App() {
         label: t("删除连接配置…"),
         icon: <Trash2 size={14} />,
         danger: true,
-        disabled: c.id === "demo",
         separator: true,
         action: () =>
           setModal({
@@ -1278,6 +1315,7 @@ export default function App() {
                 <div key={c.id} className="connection-group">
                   <div
                     className={`connection-item ${c.id === activeId ? "current" : ""}`}
+                    style={{ "--connection-color": c.color } as CSSProperties}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setContext({
@@ -1290,11 +1328,23 @@ export default function App() {
                   >
                     <button
                       className="connection-name"
-                      onClick={() => void activate(c)}
+                      disabled={loadingConnection === c.id}
+                      aria-expanded={
+                        c.id === activeId &&
+                        !!c.connected &&
+                        isTreeNodeExpanded(c.id)
+                      }
+                      onClick={() => {
+                        if (c.id === activeId && c.connected)
+                          toggleTreeNode(c.id);
+                        else void activate(c);
+                      }}
                     >
                       {loadingConnection === c.id ? (
                         <Loader2 size={13} className="spin" />
-                      ) : c.id === activeId ? (
+                      ) : c.id === activeId &&
+                        c.connected &&
+                        isTreeNodeExpanded(c.id) ? (
                         <ChevronDown size={13} />
                       ) : (
                         <ChevronRight size={13} />
@@ -1305,149 +1355,215 @@ export default function App() {
                     <span
                       className={`connection-dot ${c.connected ? "online" : ""}`}
                     />
-                    {c.id !== "demo" && (
-                      <button
-                        className="icon-button connection-edit"
-                        onClick={() => setConnectionDialog(c)}
-                        title={t("编辑连接")}
-                      >
-                        <Ellipsis size={14} />
-                      </button>
-                    )}
+                    <button
+                      className="icon-button connection-edit"
+                      onClick={() => setConnectionDialog(c)}
+                      title={t("编辑连接")}
+                    >
+                      <Ellipsis size={14} />
+                    </button>
                   </div>
-                  {c.id === activeId && c.connected && (
-                    <div className="database-tree">
-                      {databaseNames.map((database) => (
-                        <div className="database-node" key={database}>
-                          <button
-                            className={`database-name ${database === activeDatabase ? "selected" : ""}`}
-                            onClick={
-                              ["mysql", "postgres"].includes(c.engine)
-                                ? () => void selectDatabase(database)
-                                : undefined
-                            }
-                            disabled={!!loadingConnection || busy || queryBusy}
-                            title={database || t("默认数据库")}
-                            aria-expanded={database === activeDatabase}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              setContext({
-                                kind: "database",
-                                connection: { ...c, database },
-                                x: e.clientX,
-                                y: e.clientY,
-                              });
-                            }}
-                          >
-                            {database === activeDatabase ? (
-                              <ChevronDown size={12} />
-                            ) : (
-                              <ChevronRight size={12} />
-                            )}
-                            <Database size={14} />
-                            <span className="database-label">
-                              {database || t("默认数据库")}
-                            </span>
-                            {database === activeDatabase && (
-                              <span className="tree-count">
-                                {objects.length}
-                              </span>
-                            )}
-                          </button>
-                          {database === activeDatabase && (
-                            <>
-                              <div className="object-group-label">
+                  {c.id === activeId &&
+                    c.connected &&
+                    isTreeNodeExpanded(c.id) && (
+                      <div className="database-tree">
+                        {databaseNames.map((database) => (
+                          <div className="database-node" key={database}>
+                            <button
+                              className={`database-name ${database === activeDatabase ? "selected" : ""}`}
+                              onClick={() => {
+                                if (database === activeDatabase)
+                                  toggleTreeNode(c.id, database);
+                                else if (
+                                  ["mysql", "postgres", "redis"].includes(
+                                    c.engine,
+                                  )
+                                )
+                                  void selectDatabase(database);
+                              }}
+                              disabled={
+                                database !== activeDatabase &&
+                                (!!loadingConnection || busy || queryBusy)
+                              }
+                              title={database || t("默认数据库")}
+                              aria-expanded={
+                                database === activeDatabase &&
+                                isTreeNodeExpanded(c.id, database)
+                              }
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                setContext({
+                                  kind: "database",
+                                  connection: { ...c, database },
+                                  x: e.clientX,
+                                  y: e.clientY,
+                                });
+                              }}
+                            >
+                              {database === activeDatabase &&
+                              isTreeNodeExpanded(c.id, database) ? (
                                 <ChevronDown size={12} />
-                                <FolderClosed size={13} />
-                                {c.engine === "mongodb"
-                                  ? t("集合")
-                                  : c.engine === "redis"
-                                    ? t("键")
-                                    : t("数据表")}
-                                <span>{tables.length}</span>
-                              </div>
-                              {tables.map((o) => (
-                                <button
-                                  className={`object-item ${objectKey(o) === route ? "active" : ""}`}
-                                  key={objectKey(o)}
-                                  onContextMenu={(e) => {
-                                    e.preventDefault();
-                                    setContext({
-                                      kind: "object",
-                                      connection: { ...c, database },
-                                      object: o,
-                                      x: e.clientX,
-                                      y: e.clientY,
-                                    });
-                                  }}
-                                  onClick={() => openObject(o)}
-                                >
-                                  {o.type === "key" ? (
-                                    <KeyRound size={14} />
-                                  ) : o.type === "collection" ? (
-                                    <Braces size={14} />
-                                  ) : (
-                                    <Table2 size={14} />
-                                  )}
-                                  <span>{o.name}</span>
-                                  {c.engine === "postgres" &&
-                                    o.schema &&
-                                    o.schema !== "public" && (
-                                      <small>{o.schema}</small>
-                                    )}
-                                  {objectKey(o) === route && (
-                                    <span className="object-active-dot" />
-                                  )}
-                                </button>
-                              ))}
-                              {!!views.length && (
+                              ) : (
+                                <ChevronRight size={12} />
+                              )}
+                              <Database size={14} />
+                              <span className="database-label">
+                                {database || t("默认数据库")}
+                              </span>
+                              {database === activeDatabase && (
+                                <span className="tree-count">
+                                  {objects.length}
+                                </span>
+                              )}
+                            </button>
+                            {database === activeDatabase &&
+                              isTreeNodeExpanded(c.id, database) && (
                                 <>
-                                  <div className="object-group-label view-label">
-                                    <ChevronDown size={12} />
-                                    <Layers size={13} />
-                                    {t("视图")}
-                                    <span>{views.length}</span>
-                                  </div>
-                                  {views.map((o) => (
-                                    <button
-                                      className={`object-item ${objectKey(o) === route ? "active" : ""}`}
-                                      key={objectKey(o)}
-                                      onContextMenu={(e) => {
-                                        e.preventDefault();
-                                        setContext({
-                                          kind: "object",
-                                          connection: { ...c, database },
-                                          object: o,
-                                          x: e.clientX,
-                                          y: e.clientY,
-                                        });
-                                      }}
-                                      onClick={() => openObject(o)}
-                                    >
-                                      <LayoutGrid size={14} />
-                                      <span>{o.name}</span>
-                                    </button>
-                                  ))}
+                                  <button
+                                    className="object-group-label"
+                                    aria-expanded={isTreeNodeExpanded(
+                                      c.id,
+                                      database,
+                                      "tables",
+                                    )}
+                                    onClick={() =>
+                                      toggleTreeNode(c.id, database, "tables")
+                                    }
+                                  >
+                                    {isTreeNodeExpanded(
+                                      c.id,
+                                      database,
+                                      "tables",
+                                    ) ? (
+                                      <ChevronDown size={12} />
+                                    ) : (
+                                      <ChevronRight size={12} />
+                                    )}
+                                    <FolderClosed size={13} />
+                                    {c.engine === "mongodb"
+                                      ? t("集合")
+                                      : c.engine === "redis"
+                                        ? t("键")
+                                        : t("数据表")}
+                                    <span>{tables.length}</span>
+                                  </button>
+                                  {isTreeNodeExpanded(
+                                    c.id,
+                                    database,
+                                    "tables",
+                                  ) &&
+                                    tables.map((o) => (
+                                      <button
+                                        className={`object-item ${objectKey(o) === route ? "active" : ""}`}
+                                        key={objectKey(o)}
+                                        onContextMenu={(e) => {
+                                          e.preventDefault();
+                                          setContext({
+                                            kind: "object",
+                                            connection: { ...c, database },
+                                            object: o,
+                                            x: e.clientX,
+                                            y: e.clientY,
+                                          });
+                                        }}
+                                        onClick={() => openObject(o)}
+                                      >
+                                        {o.type === "key" ? (
+                                          <KeyRound size={14} />
+                                        ) : o.type === "collection" ? (
+                                          <Braces size={14} />
+                                        ) : (
+                                          <Table2 size={14} />
+                                        )}
+                                        <span>{o.name}</span>
+                                        {c.engine === "postgres" &&
+                                          o.schema &&
+                                          o.schema !== "public" && (
+                                            <small>{o.schema}</small>
+                                          )}
+                                        {objectKey(o) === route && (
+                                          <span className="object-active-dot" />
+                                        )}
+                                      </button>
+                                    ))}
+                                  {!!views.length && (
+                                    <>
+                                      <button
+                                        className="object-group-label view-label"
+                                        aria-expanded={isTreeNodeExpanded(
+                                          c.id,
+                                          database,
+                                          "views",
+                                        )}
+                                        onClick={() =>
+                                          toggleTreeNode(
+                                            c.id,
+                                            database,
+                                            "views",
+                                          )
+                                        }
+                                      >
+                                        {isTreeNodeExpanded(
+                                          c.id,
+                                          database,
+                                          "views",
+                                        ) ? (
+                                          <ChevronDown size={12} />
+                                        ) : (
+                                          <ChevronRight size={12} />
+                                        )}
+                                        <Layers size={13} />
+                                        {t("视图")}
+                                        <span>{views.length}</span>
+                                      </button>
+                                      {isTreeNodeExpanded(
+                                        c.id,
+                                        database,
+                                        "views",
+                                      ) &&
+                                        views.map((o) => (
+                                          <button
+                                            className={`object-item ${objectKey(o) === route ? "active" : ""}`}
+                                            key={objectKey(o)}
+                                            onContextMenu={(e) => {
+                                              e.preventDefault();
+                                              setContext({
+                                                kind: "object",
+                                                connection: { ...c, database },
+                                                object: o,
+                                                x: e.clientX,
+                                                y: e.clientY,
+                                              });
+                                            }}
+                                            onClick={() => openObject(o)}
+                                          >
+                                            <LayoutGrid size={14} />
+                                            <span>{o.name}</span>
+                                          </button>
+                                        ))}
+                                    </>
+                                  )}
+                                  {!objects.length && (
+                                    <p className="tree-empty">
+                                      {t("暂无数据库对象")}
+                                    </p>
+                                  )}
                                 </>
                               )}
-                              {!objects.length && (
-                                <p className="tree-empty">
-                                  {t("暂无数据库对象")}
-                                </p>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      ))}
-                      {c.engine === "mysql" && !activeDatabase && (
-                        <p className="tree-empty">
-                          {databaseNames.length
-                            ? t("请选择数据库")
-                            : t("暂无可访问的数据库")}
-                        </p>
-                      )}
-                    </div>
-                  )}
+                          </div>
+                        ))}
+                        {databaseNotice && (
+                          <p className="tree-empty">{t(databaseNotice)}</p>
+                        )}
+                        {c.engine === "mysql" && !activeDatabase && (
+                          <p className="tree-empty">
+                            {databaseNames.length
+                              ? t("请选择数据库")
+                              : t("暂无可访问的数据库")}
+                          </p>
+                        )}
+                      </div>
+                    )}
                 </div>
               ))}
           </div>
@@ -1478,37 +1594,10 @@ export default function App() {
             </button>
           </div>
           <div className="sidebar-bottom">
-            <div className="demo-note">
-              <span>
-                <Sparkles size={14} />
-                {activeId === "demo"
-                  ? t("探索示例工作空间")
-                  : t("数据库已就绪")}
-              </span>
-              <p>
-                {activeId === "demo"
-                  ? t(
-                      "这是一个真实的本地 SQLite 数据库。试试查询、编辑或导出数据。",
-                    )
-                  : t("所有查询直接运行在你的数据库上。")}
-              </p>
-              <button
-                onClick={() =>
-                  activeId === "demo"
-                    ? setConnectionDialog(null)
-                    : setRoute("query")
-                }
-              >
-                {activeId === "demo"
-                  ? t("连接自己的数据库")
-                  : t("打开查询编辑器")}
-                <ArrowRight size={13} />
-              </button>
-            </div>
             <div className="sidebar-footer">
               <span className="online-dot" />
               <AppIcon size={18} />
-              SQLStudio <span>v0.1.3</span>
+              SQLStudio <span>v0.1.4</span>
             </div>
           </div>
         </aside>
@@ -2598,7 +2687,7 @@ export default function App() {
               </span>
               <span>UTF-8</span>
               <span className="status-separator" />
-              <span>SQLStudio 0.1.3</span>
+              <span>SQLStudio 0.1.4</span>
             </div>
           </footer>
         </main>
@@ -2739,7 +2828,7 @@ export default function App() {
                   </span>
                   <div>
                     <h3>SQLStudio</h3>
-                    <span>{t("跨平台数据库工作空间 · 0.1.0")}</span>
+                    <span>{t("跨平台数据库工作空间 · 0.1.4")}</span>
                   </div>
                 </div>
                 <div className="settings-language">
@@ -2786,7 +2875,7 @@ export default function App() {
                   <strong>{t("新建连接")}</strong>
                   <kbd>⌘ / Ctrl + N</kbd>
                 </div>
-                {activeId !== "demo" && connection && (
+                {connection && (
                   <div className="connection-settings-actions">
                     <button
                       className="button"

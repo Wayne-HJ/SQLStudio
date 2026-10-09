@@ -13,6 +13,8 @@ const connection = z.object({
   username: z.string().max(500),
   password: z.string().max(10000).optional(),
   uri: z.string().max(10000).optional(),
+  redisAuth: z.enum(["none", "password", "acl"]).optional(),
+  redisConnectionMode: z.enum(["host", "uri"]).optional(),
   filePath: z.string().max(2000).optional(),
   ssl: z.boolean(),
   color: z.string().max(30),
@@ -133,5 +135,8 @@ export function safeError(error: unknown, args: unknown[] = []) {
       }
     }
   }
-  return message.replace(/(mongodb(?:\+srv)?:\/\/)[^\s@]+@/g, "$1[已隐藏]@");
+  return message.replace(
+    /((?:mongodb(?:\+srv)?|rediss?):\/\/)[^\s@]+@/g,
+    "$1[已隐藏]@",
+  );
 }

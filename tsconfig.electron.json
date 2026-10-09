@@ -14,7 +14,6 @@
     "electron/main.ts",
     "server/service.ts",
     "server/store.ts",
-    "server/demo.ts",
     "server/rpc.ts",
     "shared/types.ts"
   ]

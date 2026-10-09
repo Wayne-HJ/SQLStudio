@@ -271,7 +271,7 @@ html[lang="en"] .desktop-tool {
 .connection-item .engine-icon {
   width: 18px !important;
   height: 18px !important;
-  background: #90979b !important;
+  background: var(--connection-color, #90979b) !important;
   color: #fff !important;
   border-radius: 3px;
   font-size: 10px !important;
