@@ -105,6 +105,19 @@ export interface HistoryEntry {
   success: boolean;
   error?: string;
 }
+export interface OperationLogEntry {
+  id: string;
+  operation: string;
+  connectionId: string;
+  connectionName: string;
+  database: string;
+  engine: Engine;
+  timestamp: string;
+  elapsedMs: number;
+  success: boolean;
+  error?: string;
+  commands: { text: string; parameters?: unknown[] }[];
+}
 export interface SchemaDifference {
   field: string;
   kind: "missing" | "extra" | "changed";
@@ -144,6 +157,18 @@ export interface DatabaseScope {
   connectionId: string;
   database: string;
 }
+export interface DatabaseDefinition {
+  name: string;
+  charset?: string;
+  collation?: string;
+}
+export interface DatabaseSettings {
+  charset?: string;
+  collation?: string;
+  encoding?: string;
+  charsets: { name: string; defaultCollation: string }[];
+  collations: { name: string; charset: string }[];
+}
 export interface TablePair {
   source: DbObject;
   target: DbObject;
@@ -163,6 +188,7 @@ export interface DatabaseSyncPlan {
   expiresAt: string;
 }
 export interface Api {
+  operationLogs(): Promise<OperationLogEntry[]>;
   connections(): Promise<Connection[]>;
   saveConnection(connection: Connection): Promise<Connection>;
   removeConnection(id: string): Promise<void>;
@@ -175,6 +201,13 @@ export interface Api {
     notice?: string;
   }>;
   selectDatabase(id: string, database: string): Promise<void>;
+  databaseSettings(id: string, database?: string): Promise<DatabaseSettings>;
+  createDatabase(id: string, definition: DatabaseDefinition): Promise<void>;
+  updateDatabase(
+    id: string,
+    database: string,
+    definition: DatabaseDefinition,
+  ): Promise<void>;
   dropDatabase(id: string, database: string): Promise<void>;
   databaseObjects(scope: DatabaseScope): Promise<DbObject[]>;
   objects(id: string): Promise<DbObject[]>;

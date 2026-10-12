@@ -75,6 +75,12 @@ import SqlImportDialog from "./components/SqlImportDialog";
 import ContextMenu, { type MenuItem } from "./components/ContextMenu";
 import TableFilterBuilder from "./components/TableFilterBuilder";
 import AppIcon from "./components/AppIcon";
+import RedisKeyTree from "./components/RedisKeyTree";
+import RedisValueView from "./components/RedisValueView";
+import DatabaseConsole from "./components/DatabaseConsole";
+import DatabaseDialog from "./components/DatabaseDialog";
+import OperationLogView from "./components/OperationLogView";
+import { useTableEditing } from "./hooks/useTableEditing";
 import { getLanguage, setLanguage, useLanguage } from "./i18n";
 import type {
   Connection,
@@ -139,7 +145,7 @@ type Modal =
       action: () => Promise<void>;
       danger?: boolean;
     }
-  | { kind: "row"; mode: "insert" | "edit"; row?: Record<string, unknown> }
+  | { kind: "error"; title: string; description: string }
   | { kind: "save" }
   | { kind: "settings" }
   | { kind: "rename"; connection: Connection; object: DbObject }
@@ -190,6 +196,10 @@ export default function App() {
   const [connectionDialog, setConnectionDialog] = useState<
     Connection | null | false
   >(false);
+  const [databaseDialog, setDatabaseDialog] = useState<{
+    connection: Connection;
+    database?: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [queryBusy, setQueryBusy] = useState(false);
   const [loadingConnection, setLoadingConnection] = useState("");
@@ -305,6 +315,10 @@ export default function App() {
     setQueryError("");
   }
   async function activate(c?: Connection) {
+    if (tableEditing.saving) {
+      notify(t("请等待数据保存完成"), true);
+      return;
+    }
     const token = ++loadToken.current;
     activeRef.current = c?.id ?? "";
     setActiveId(c?.id ?? "");
@@ -352,7 +366,8 @@ export default function App() {
       database === activeDatabase ||
       loadingConnection ||
       busy ||
-      queryBusy
+      queryBusy ||
+      tableEditing.saving
     )
       return;
     const currentId = activeId;
@@ -433,6 +448,26 @@ export default function App() {
       tableToken.current++;
     };
   }, [loadTable]);
+  const tableEditing = useTableEditing({
+    scope: JSON.stringify([
+      activeId,
+      activeDatabase,
+      object && objectKey(object),
+    ]),
+    data,
+    columns: info.columns,
+    writable:
+      object?.type === "table" &&
+      ["mysql", "postgres", "sqlite"].includes(connection?.engine ?? ""),
+    update: (key, values) => api.updateRow(activeId, object!, key, values),
+    insert: (values) => api.insertRow(activeId, object!, values),
+    refresh: loadTable,
+    onError: (description) => {
+      setModalError("");
+      setModal({ kind: "error", title: t("保存失败"), description });
+    },
+    onSaved: (count) => notify(t("已保存 {0} 条记录", [count])),
+  });
   useEffect(() => {
     if (route !== "model" || !connected) return;
     let cancelled = false;
@@ -643,54 +678,6 @@ export default function App() {
         .map((c) => [c.name, row[c.name]]),
     );
   }
-  function editRow(index: number) {
-    if (
-      !object ||
-      object.type !== "table" ||
-      !["mysql", "postgres", "sqlite"].includes(connection?.engine ?? "")
-    ) {
-      notify(t("请使用查询编辑器修改此对象"), true);
-      return;
-    }
-    if (!info.columns.some((c) => c.primaryKey)) {
-      notify(t("此表没有主键，无法安全编辑"), true);
-      return;
-    }
-    const row = data.rows[index];
-    setModalText(
-      JSON.stringify(
-        Object.fromEntries(
-          Object.entries(row).filter(
-            ([k]) => !info.columns.find((c) => c.name === k)?.primaryKey,
-          ),
-        ),
-        null,
-        2,
-      ),
-    );
-    setModalError("");
-    setModal({ kind: "row", mode: "edit", row });
-  }
-  function insertRow() {
-    if (!object) return;
-    const values = Object.fromEntries(
-      info.columns
-        .filter((c) => !c.primaryKey && c.defaultValue == null)
-        .map((c) => [
-          c.name,
-          c.nullable
-            ? null
-            : c.name.endsWith("_at")
-              ? new Date().toISOString().slice(0, 19).replace("T", " ")
-              : /int|real|decimal|numeric/i.test(c.type)
-                ? 0
-                : "",
-        ]),
-    );
-    setModalText(JSON.stringify(values, null, 2));
-    setModalError("");
-    setModal({ kind: "row", mode: "insert" });
-  }
   function deleteRows() {
     if (!selected.length || !object) return;
     setModal({
@@ -715,16 +702,6 @@ export default function App() {
     setModalError("");
     try {
       if (modal.kind === "confirm") await modal.action();
-      if (modal.kind === "row" && object) {
-        const values = JSON.parse(modalText);
-        if (!values || Array.isArray(values) || typeof values !== "object")
-          throw new Error(t("请输入 JSON 对象"));
-        if (modal.mode === "edit")
-          await api.updateRow(activeId, object, rowKey(modal.row!), values);
-        else await api.insertRow(activeId, object, values);
-        await loadTable();
-        notify(modal.mode === "edit" ? t("记录已更新") : t("记录已添加"));
-      }
       if (modal.kind === "save") {
         if (!modalText.trim()) throw new Error(t("请输入查询名称"));
         setSaved((s) => [
@@ -867,6 +844,13 @@ export default function App() {
     const c = context.connection,
       o = context.object;
     const relational = ["sqlite", "mysql", "postgres"].includes(c.engine);
+    const databaseManagement = ["mysql", "postgres"].includes(c.engine);
+    const createDatabaseItem: MenuItem = {
+      label: t("新建数据库…"),
+      icon: <Plus size={14} />,
+      disabled: !databaseManagement || busy || queryBusy || tableEditing.saving,
+      action: () => setDatabaseDialog({ connection: c }),
+    };
     const importSQL = () => {
       sqlTargetRef.current = c;
       sqlImportRef.current?.click();
@@ -888,9 +872,33 @@ export default function App() {
           action: () =>
             void openDatabase().catch((e) => notify(e.message, true)),
         },
+        { ...createDatabaseItem, separator: true },
+        {
+          label: t("修改数据库…"),
+          icon: <Settings2 size={14} />,
+          disabled:
+            !databaseManagement ||
+            busy ||
+            queryBusy ||
+            tableEditing.saving ||
+            (c.engine === "mysql" &&
+              [
+                "mysql",
+                "sys",
+                "information_schema",
+                "performance_schema",
+              ].includes(c.database.toLowerCase())) ||
+            (c.engine === "postgres" &&
+              ["postgres", "template0", "template1"].includes(
+                c.database.toLowerCase(),
+              )),
+          action: () =>
+            setDatabaseDialog({ connection: c, database: c.database }),
+        },
         {
           label: t("结构比对…"),
           icon: <Layers size={14} />,
+          separator: true,
           disabled: !relational,
           action: () =>
             void openDatabase()
@@ -1127,6 +1135,7 @@ export default function App() {
         icon: <Settings2 size={14} />,
         action: () => setConnectionDialog(c),
       },
+      { ...createDatabaseItem, separator: true },
       {
         label: t("新建查询"),
         icon: <FileCode2 size={14} />,
@@ -1217,6 +1226,8 @@ export default function App() {
     object?.name ??
     {
       query: t("查询编辑器"),
+      console: t("数据库命令行"),
+      operations: t("操作日志"),
       model: t("数据库关系图"),
       history: t("查询历史"),
       saved: t("已保存查询"),
@@ -1262,11 +1273,7 @@ export default function App() {
         }}
         onConnection={() => setConnectionDialog(null)}
         onBackup={() => void backup()}
-        onImport={() => importRef.current?.click()}
-        onExport={() => exportResult("csv")}
         onInspector={() => setShowInspector((v) => !v)}
-        onImportSql={() => sqlImportRef.current?.click()}
-        onExportSql={() => void exportSql()}
         connected={connected}
         sqlite={connection?.engine === "sqlite"}
       />
@@ -1383,7 +1390,10 @@ export default function App() {
                               }}
                               disabled={
                                 database !== activeDatabase &&
-                                (!!loadingConnection || busy || queryBusy)
+                                (!!loadingConnection ||
+                                  busy ||
+                                  queryBusy ||
+                                  tableEditing.saving)
                               }
                               title={database || t("默认数据库")}
                               aria-expanded={
@@ -1452,39 +1462,59 @@ export default function App() {
                                     database,
                                     "tables",
                                   ) &&
-                                    tables.map((o) => (
-                                      <button
-                                        className={`object-item ${objectKey(o) === route ? "active" : ""}`}
-                                        key={objectKey(o)}
-                                        onContextMenu={(e) => {
-                                          e.preventDefault();
+                                    (c.engine === "redis" ? (
+                                      <RedisKeyTree
+                                        key={`${c.id}/${database}`}
+                                        objects={tables}
+                                        selected={object?.name}
+                                        sidebar
+                                        onSelect={openObject}
+                                        onContextMenu={(event, key) => {
+                                          event.preventDefault();
                                           setContext({
                                             kind: "object",
                                             connection: { ...c, database },
-                                            object: o,
-                                            x: e.clientX,
-                                            y: e.clientY,
+                                            object: key,
+                                            x: event.clientX,
+                                            y: event.clientY,
                                           });
                                         }}
-                                        onClick={() => openObject(o)}
-                                      >
-                                        {o.type === "key" ? (
-                                          <KeyRound size={14} />
-                                        ) : o.type === "collection" ? (
-                                          <Braces size={14} />
-                                        ) : (
-                                          <Table2 size={14} />
-                                        )}
-                                        <span>{o.name}</span>
-                                        {c.engine === "postgres" &&
-                                          o.schema &&
-                                          o.schema !== "public" && (
-                                            <small>{o.schema}</small>
+                                      />
+                                    ) : (
+                                      tables.map((o) => (
+                                        <button
+                                          className={`object-item ${objectKey(o) === route ? "active" : ""}`}
+                                          key={objectKey(o)}
+                                          onContextMenu={(e) => {
+                                            e.preventDefault();
+                                            setContext({
+                                              kind: "object",
+                                              connection: { ...c, database },
+                                              object: o,
+                                              x: e.clientX,
+                                              y: e.clientY,
+                                            });
+                                          }}
+                                          onClick={() => openObject(o)}
+                                        >
+                                          {o.type === "key" ? (
+                                            <KeyRound size={14} />
+                                          ) : o.type === "collection" ? (
+                                            <Braces size={14} />
+                                          ) : (
+                                            <Table2 size={14} />
                                           )}
-                                        {objectKey(o) === route && (
-                                          <span className="object-active-dot" />
-                                        )}
-                                      </button>
+                                          <span>{o.name}</span>
+                                          {c.engine === "postgres" &&
+                                            o.schema &&
+                                            o.schema !== "public" && (
+                                              <small>{o.schema}</small>
+                                            )}
+                                          {objectKey(o) === route && (
+                                            <span className="object-active-dot" />
+                                          )}
+                                        </button>
+                                      ))
                                     ))}
                                   {!!views.length && (
                                     <>
@@ -1705,9 +1735,15 @@ export default function App() {
                 </span>
               </button>
             )}
-            {["model", "history", "saved", "structure", "sync"].includes(
-              route,
-            ) && (
+            {[
+              "model",
+              "history",
+              "saved",
+              "structure",
+              "sync",
+              "console",
+              "operations",
+            ].includes(route) && (
               <button className="workspace-tab active">
                 <span>{currentName}</span>
                 <span
@@ -1742,7 +1778,9 @@ export default function App() {
             </span>
           </div>
           <div className="workspace-content">
-            {!connected ? (
+            {route === "operations" ? (
+              <OperationLogView />
+            ) : !connected ? (
               <div className="disconnected-state">
                 <div className="hero-db">
                   <Database size={34} />
@@ -1820,13 +1858,18 @@ export default function App() {
                 }}
                 onRefresh={() => void refreshObjects()}
                 inspector={showInspector}
+                onCommand={() => setRoute("console")}
               />
             ) : object ? (
               <>
                 <div className="object-heading">
                   <div className="object-heading-title">
                     <div className="object-title-icon">
-                      <Table2 size={21} />
+                      {object.type === "key" ? (
+                        <KeyRound size={21} />
+                      ) : (
+                        <Table2 size={21} />
+                      )}
                     </div>
                     <div>
                       <h1>
@@ -1844,10 +1887,14 @@ export default function App() {
                       <p>
                         {connection?.database}
                         {object.schema && ` / ${object.schema}`}
-                        <span>·</span>
-                        {data.total.toLocaleString(language)} {t("条记录")}
-                        <span>·</span>
-                        {t("{0} 个字段", [info.columns.length])}
+                        {object.type !== "key" && (
+                          <>
+                            <span>·</span>
+                            {data.total.toLocaleString(language)} {t("条记录")}
+                            <span>·</span>
+                            {t("{0} 个字段", [info.columns.length])}
+                          </>
+                        )}
                       </p>
                     </div>
                   </div>
@@ -1859,6 +1906,10 @@ export default function App() {
                     <button
                       className="button"
                       onClick={() => {
+                        if (connection?.engine === "redis") {
+                          setRoute("console");
+                          return;
+                        }
                         const quoted =
                           connection?.engine === "mysql"
                             ? `\`${object.name.replaceAll("`", "``")}\``
@@ -1875,15 +1926,15 @@ export default function App() {
                                 null,
                                 2,
                               )
-                            : connection?.engine === "redis"
-                              ? `["GET",${JSON.stringify(object.name)}]`
-                              : `SELECT * FROM ${object.schema ? `"${object.schema.replaceAll('"', '""')}".` : ""}${quoted}\nLIMIT 100;`,
+                            : `SELECT * FROM ${object.schema ? `"${object.schema.replaceAll('"', '""')}".` : ""}${quoted}\nLIMIT 100;`,
                         );
                         setRoute("query");
                       }}
                     >
                       <Code2 size={14} />
-                      {t("查询此表")}
+                      {object.type === "key"
+                        ? t("数据库命令行")
+                        : t("查询此表")}
                     </button>
                   </div>
                 </div>
@@ -1892,32 +1943,66 @@ export default function App() {
                     className={view === "data" ? "active" : ""}
                     onClick={() => setView("data")}
                   >
-                    <Table2 size={15} />
-                    {t("数据")}
+                    {object.type === "key" ? (
+                      <Braces size={15} />
+                    ) : (
+                      <Table2 size={15} />
+                    )}
+                    {object.type === "key" ? t("JSON 数据") : t("数据")}
                   </button>
-                  <button
-                    className={view === "structure" ? "active" : ""}
-                    onClick={() => setView("structure")}
-                  >
-                    <Layers size={15} />
-                    {t("结构")}
-                    <span>{info.columns.length}</span>
-                  </button>
-                  <button
-                    className={view === "relations" ? "active" : ""}
-                    onClick={() => setView("relations")}
-                  >
-                    <GitBranch size={15} />
-                    {t("关系")}
-                  </button>
+                  {connection?.engine !== "redis" && (
+                    <button
+                      className={view === "structure" ? "active" : ""}
+                      onClick={() => setView("structure")}
+                    >
+                      <Layers size={15} />
+                      {t("结构")}
+                      <span>{info.columns.length}</span>
+                    </button>
+                  )}
+                  {connection?.engine !== "redis" && (
+                    <button
+                      className={view === "relations" ? "active" : ""}
+                      onClick={() => setView("relations")}
+                    >
+                      <GitBranch size={15} />
+                      {t("关系")}
+                    </button>
+                  )}
                   <div className="view-tabs-spacer" />
                   <span className="grid-hint">
                     {writable && hasPrimary
-                      ? t("双击单元格编辑数据")
+                      ? t("直接编辑单元格，点击保存写入数据库")
                       : t("浏览数据库对象")}
                   </span>
                 </div>
-                {view === "data" ? (
+                {view === "data" && connection?.engine === "redis" ? (
+                  <>
+                    <div className="data-toolbar">
+                      <button
+                        className="button"
+                        disabled={busy}
+                        onClick={() => void loadTable()}
+                      >
+                        <RefreshCw size={14} />
+                        {t("刷新")}
+                      </button>
+                      <button
+                        className="button"
+                        onClick={() => setRoute("console")}
+                      >
+                        <Terminal size={14} />
+                        {t("数据库命令行")}
+                      </button>
+                    </div>
+                    <RedisValueView
+                      name={object.name}
+                      data={data}
+                      busy={busy}
+                      onError={(message) => notify(message, true)}
+                    />
+                  </>
+                ) : view === "data" ? (
                   <>
                     <div className="data-toolbar">
                       <div className="filter-input">
@@ -1987,6 +2072,11 @@ export default function App() {
                               <button
                                 className="button text danger-text"
                                 onClick={deleteRows}
+                                disabled={
+                                  busy ||
+                                  tableEditing.saving ||
+                                  !!tableEditing.pending
+                                }
                               >
                                 <Trash2 size={14} />
                                 {t("删除")}
@@ -1995,14 +2085,45 @@ export default function App() {
                           </>
                         )}
                         {writable && (
-                          <button className="button text" onClick={insertRow}>
+                          <button
+                            className="button text"
+                            disabled={busy || tableEditing.saving}
+                            onClick={tableEditing.add}
+                          >
                             <Plus size={15} />
                             {t("添加记录")}
                           </button>
                         )}
+                        {writable && tableEditing.pending > 0 && (
+                          <>
+                            <span className="pending-edits">
+                              {t("{0} 行待保存", [tableEditing.pending])}
+                            </span>
+                            <button
+                              className="button primary"
+                              disabled={busy || tableEditing.saving}
+                              onClick={() => void tableEditing.save()}
+                            >
+                              {tableEditing.saving ? (
+                                <Loader2 size={14} className="spin" />
+                              ) : (
+                                <Check size={14} />
+                              )}
+                              {t("保存")}
+                            </button>
+                            <button
+                              className="button text"
+                              disabled={busy || tableEditing.saving}
+                              onClick={tableEditing.cancel}
+                            >
+                              {t("取消更改")}
+                            </button>
+                          </>
+                        )}
                         <button
                           className="icon-button"
                           title={t("刷新数据")}
+                          disabled={busy || tableEditing.saving}
                           onClick={() => void loadTable()}
                         >
                           <RefreshCw size={14} className={busy ? "spin" : ""} />
@@ -2072,11 +2193,11 @@ export default function App() {
                     <div className="table-with-inspector">
                       <div className="table-area">
                         <DataGrid
-                          result={data}
+                          result={writable ? tableEditing.result : data}
                           columns={info.columns}
                           selected={selected}
                           onSelect={setSelected}
-                          onEdit={editRow}
+                          editing={writable ? tableEditing.grid : undefined}
                           sort={sort}
                           direction={direction}
                           onSort={(column) => {
@@ -2088,7 +2209,7 @@ export default function App() {
                             );
                             setPage(1);
                           }}
-                          busy={busy}
+                          busy={busy || tableEditing.saving}
                         />
                         <div className="table-pagination">
                           <div>
@@ -2250,7 +2371,7 @@ export default function App() {
                               {t("在列标题上点击可排序。")}
                               <br />
                               {writable && hasPrimary
-                                ? t("双击数据单元格，编辑并保存记录。")
+                                ? t("直接编辑单元格，点击保存写入数据库")
                                 : t("在查询编辑器中执行更多操作。")}
                             </p>
                           </div>
@@ -2310,6 +2431,25 @@ export default function App() {
                   </div>
                 )}
               </>
+            ) : route === "console" && connection ? (
+              <DatabaseConsole
+                key={activeId}
+                connection={connection}
+                onLogs={() => setRoute("operations")}
+                onExecuted={async () => {
+                  const token = loadToken.current;
+                  const catalog = await api.databases(activeId);
+                  const list = await api.objects(activeId);
+                  if (token !== loadToken.current) return;
+                  if (catalog.selected !== activeDatabase) {
+                    resetDatabaseWorkspace();
+                    setRoute("console");
+                  }
+                  setActiveDatabase(catalog.selected);
+                  setDatabaseNames(catalog.names);
+                  setObjects(list);
+                }}
+              />
             ) : route === "query" ? (
               <div className="query-workspace">
                 <div className="query-toolbar">
@@ -2735,6 +2875,46 @@ export default function App() {
           }}
         />
       )}
+      {databaseDialog && (
+        <DatabaseDialog
+          connection={databaseDialog.connection}
+          database={databaseDialog.database}
+          onClose={() => setDatabaseDialog(null)}
+          onSaved={(definition) => {
+            const target = databaseDialog;
+            const renamed =
+              target.database !== undefined &&
+              target.database !== definition.name;
+            const selected =
+              renamed && activeDatabase === target.database
+                ? definition.name
+                : activeDatabase;
+            setDatabaseDialog(null);
+            notify(
+              t(
+                target.database === undefined ? "数据库已创建" : "数据库已修改",
+              ),
+            );
+            void (async () => {
+              const list = await refreshConnections();
+              const config =
+                list.find((item) => item.id === target.connection.id) ??
+                target.connection;
+              if (activeRef.current !== target.connection.id) return;
+              if (!config.connected)
+                await api.connect({ ...config, database: selected });
+              const catalog = await api.databases(config.id);
+              const nextObjects = await api.objects(config.id);
+              if (activeRef.current !== config.id) return;
+              if (catalog.selected !== activeDatabase) resetDatabaseWorkspace();
+              setActiveDatabase(catalog.selected);
+              setDatabaseNames(catalog.names);
+              setObjects(nextObjects);
+              await refreshConnections();
+            })().catch((error) => notify(error.message, true));
+          }}
+        />
+      )}
       {modal && (
         <div
           className="modal-backdrop"
@@ -2761,21 +2941,14 @@ export default function App() {
               </div>
               <div>
                 <h2 id="action-modal-title">
-                  {modal.kind === "confirm"
+                  {modal.kind === "confirm" || modal.kind === "error"
                     ? t(modal.title)
-                    : modal.kind === "row"
-                      ? modal.mode === "insert"
-                        ? t("添加记录")
-                        : t("编辑记录")
-                      : modal.kind === "save"
-                        ? t("保存查询")
-                        : modal.kind === "rename"
-                          ? t("重命名对象")
-                          : t("系统设置")}
+                    : modal.kind === "save"
+                      ? t("保存查询")
+                      : modal.kind === "rename"
+                        ? t("重命名对象")
+                        : t("系统设置")}
                 </h2>
-                {modal.kind === "row" && (
-                  <p>{t("以 JSON 编辑字段值 · null 表示数据库 NULL")}</p>
-                )}
               </div>
               <button
                 className="icon-button close"
@@ -2786,28 +2959,8 @@ export default function App() {
                 <X size={18} />
               </button>
             </div>
-            {modal.kind === "confirm" ? (
+            {modal.kind === "confirm" || modal.kind === "error" ? (
               <p className="confirm-description">{t(modal.description)}</p>
-            ) : modal.kind === "row" ? (
-              <div className="row-editor">
-                <div className="row-editor-meta">
-                  <Database size={14} />
-                  {connection?.name}
-                  <ChevronRight size={12} />
-                  {object?.name}
-                </div>
-                <CodeMirror
-                  value={modalText}
-                  height="300px"
-                  extensions={[json(), editorTheme]}
-                  onChange={setModalText}
-                />
-                <p>
-                  {modal.mode === "edit"
-                    ? t("主键保持原值；保存后立即写入数据库。")
-                    : t("省略有默认值或自动生成的字段。保存后立即写入数据库。")}
-                </p>
-              </div>
             ) : modal.kind === "save" || modal.kind === "rename" ? (
               <label className="save-query-label">
                 {modal.kind === "rename" ? t("新对象名称") : t("查询名称")}
@@ -2937,22 +3090,22 @@ export default function App() {
                   onClick={() => setModal(null)}
                   disabled={modalBusy}
                 >
-                  {t("取消")}
+                  {modal.kind === "error" ? t("关闭") : t("取消")}
                 </button>
-                <button
-                  className={`button ${modal.kind === "confirm" && modal.danger ? "danger" : "primary"}`}
-                  onClick={() => void submitModal()}
-                  disabled={modalBusy}
-                >
-                  {modalBusy ? (
-                    <Loader2 size={15} className="spin" />
-                  ) : (
-                    <Check size={15} />
-                  )}
-                  {modal.kind === "row" || modal.kind === "save"
-                    ? t("保存")
-                    : t("确认")}
-                </button>
+                {modal.kind !== "error" && (
+                  <button
+                    className={`button ${modal.kind === "confirm" && modal.danger ? "danger" : "primary"}`}
+                    onClick={() => void submitModal()}
+                    disabled={modalBusy}
+                  >
+                    {modalBusy ? (
+                      <Loader2 size={15} className="spin" />
+                    ) : (
+                      <Check size={15} />
+                    )}
+                    {modal.kind === "save" ? t("保存") : t("确认")}
+                  </button>
+                )}
               </footer>
             )}
           </section>

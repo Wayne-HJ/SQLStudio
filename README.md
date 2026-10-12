@@ -16,7 +16,9 @@ SQLStudio is in early development. The features below are implemented, with the 
 | Object browser       | Browse tables, views, collections, and Redis keys; switch between list and icon views; search and inspect objects.                                    |
 | Data browser         | Page through records, sort columns, search across fields, combine column filters with AND / OR, and filter MongoDB documents with JSON.               |
 | Query editor         | Use syntax highlighting, SQL completion, selected-statement execution, query history, and saved queries.                                              |
-| Record editing       | Insert, update, and delete relational records with write confirmation. Updates and deletes require the complete primary key.                          |
+| Record editing       | Edit relational fields directly in the grid, add blank rows, then save pending changes. Updates and deletes require the complete primary key.         |
+| Database console     | Run SQL, MongoDB JSON commands, and Redis text commands or JSON argument arrays from the top toolbar.                                                 |
+| Operation log        | Review the latest 1,000 database operations with commands, bound parameters, database, timing, and success or failure, persisted on this device.      |
 | Schema inspection    | Inspect columns, primary keys, foreign keys, and indexes, and view database relationship diagrams.                                                    |
 | Import and export    | Import and export relational SQL, import table data from CSV, export results as CSV / JSON, and back up SQLite files.                                 |
 | Schema comparison    | Compare column types, nullability, defaults, primary keys, indexes, and foreign keys; preview SQL for new tables and columns.                         |
@@ -25,13 +27,13 @@ SQLStudio is in early development. The features below are implemented, with the 
 
 ## Supported databases
 
-| Database        | Connection                                   | Main workflows                                                                                                     |
-| --------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| MySQL / MariaDB | Host, port, database, and credentials        | SQL queries, record editing, schema inspection, SQL import / export, comparison, and synchronization.              |
-| PostgreSQL      | Host, port, database, and credentials        | SQL queries, record editing, schema inspection, SQL import / export, comparison, and synchronization.              |
-| SQLite          | Local database file                          | SQL queries, record editing, schema inspection, SQL import / export, comparison, synchronization, and file backup. |
-| MongoDB         | Host and credentials, or a connection URI    | Collection browsing, JSON filters, and supported JSON commands.                                                    |
-| Redis           | Host and port, or a Redis URI; optional authentication and database number | Key browsing, logical database switching, and commands entered as text or JSON argument arrays. |
+| Database        | Connection                                                                 | Main workflows                                                                                                     |
+| --------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| MySQL / MariaDB | Host, port, database, and credentials                                      | SQL queries, record editing, schema inspection, SQL import / export, comparison, and synchronization.              |
+| PostgreSQL      | Host, port, database, and credentials                                      | SQL queries, record editing, schema inspection, SQL import / export, comparison, and synchronization.              |
+| SQLite          | Local database file                                                        | SQL queries, record editing, schema inspection, SQL import / export, comparison, synchronization, and file backup. |
+| MongoDB         | Host and credentials, or a connection URI                                  | Collection browsing, JSON filters, and supported JSON commands.                                                    |
+| Redis           | Host and port, or a Redis URI; optional authentication and database number | Key browsing, logical database switching, and commands entered as text or JSON argument arrays.                    |
 
 Connection presets include Amazon RDS, Supabase, Neon, MongoDB Atlas, and TiDB Cloud. These use the corresponding database protocols and connection details. TLS connections validate server certificates.
 
@@ -81,13 +83,15 @@ Relational filters run in the database and apply to row counts, sorting, and pag
 
 Right-click connections, databases, and tables for connection management, queries, schema inspection, import / export, comparison, synchronization, renaming, and deletion. The database menu includes **Delete database**, separately from **Delete connection profile** in the connection menu. Database deletion removes the database and all its data (the file for SQLite); the connection profile is retained. Redis uses **Empty database** to remove keys from the selected logical database. Deletion requires confirmation, and system databases are protected.
 
+For MySQL and PostgreSQL, right-click a connection or database and choose **Create database**. Right-click a database and choose **Edit database** to change MySQL's default character set and collation, or rename a PostgreSQL database. MySQL defaults apply to newly created tables; existing table data is not converted. PostgreSQL renaming updates saved connection profiles and reconnects the active workspace; a server refusal restores the original sessions.
+
 ### Compare schemas and synchronize data
 
 1. Add the source and target database connections.
-2. Open **Schema compare**, choose the source and target connections, then select their databases. MySQL and PostgreSQL support choosing different databases within the same connection.
+2. Right-click a connection, database, or table and choose **Schema compare**, then choose the source and target connections and databases. MySQL and PostgreSQL support choosing different databases within the same connection.
 3. Select any number of tables, or use **Select all**. Same-name tables are matched automatically; review or change each target mapping. Missing target tables can be created using the generated schema SQL.
 4. Review per-table differences and the combined SQL. Use **Open all SQL in target query editor** to review and run the schema changes in the chosen target database.
-5. Open **Data sync**, select databases and tables using the same database engine with matching columns, types, and primary keys. Review each table's differences and confirm **Synchronize all selected tables**. Extra target records are retained unless deletion is explicitly enabled.
+5. Choose **Data sync** from the right-click menu, then select databases and tables using the same database engine with matching columns, types, and primary keys. Review each table's differences and confirm **Synchronize all selected tables**. Extra target records are retained unless deletion is explicitly enabled.
 
 Synchronization supports up to **500 selected tables** per batch, with a limit of **10,000 rows / 8 MiB per table**. Plans expire after **10 minutes**. The application rechecks all selected tables' data and schema fingerprints before applying any writes and cancels if either side has changed. All target writes use one transaction. Parent tables are written before child tables, and child records are deleted before parent records. MySQL targets must use InnoDB. Constraint failures roll back the entire batch, including writes to earlier tables.
 
@@ -95,7 +99,7 @@ Schema SQL generation covers new tables and new ordinary columns. Dropping colum
 
 ### Import and export SQL
 
-Use **Import SQL** / **Export SQL** in the toolbar or the object browser context menu to transfer relational schema and data.
+Use the SQL import and export actions in the connection, database, or object context menu to transfer relational schema and data.
 
 | Operation  | Current limits                          |
 | ---------- | --------------------------------------- |
@@ -139,7 +143,13 @@ Or use a JSON argument array:
 ["SET", "customer:1", "hello world"]
 ```
 
-Subscription, transaction, connection-control, and full-database clearing commands are currently restricted. The key browser uses `SCAN` and lists up to 2,000 keys. MongoDB and Redis writes use the command editor.
+Subscription, transaction, connection-control, and full-database clearing commands are currently restricted. The key browser uses `SCAN` and lists up to 2,000 keys in a tree grouped by colon-separated namespaces. Selecting a key shows its value as collapsible JSON with type and expiration information; lists, sets, and sorted sets display up to 1,000 items and indicate when more remain. MongoDB and Redis writes use the query editor or **Database console** in the top toolbar.
+
+### Edit records and review operations
+
+Click any editable relational field and type its new value. **Add record** appends a blank row directly to the grid. Leave a new field at **Default value** to use its database default or generated value; choose **NULL** explicitly or enter an empty string. Click **Save** to write pending rows immediately. Errors appear in a dialog and failed rows retain their inputs. Each successful row is removed from the pending set, so retrying after a later failure does not duplicate earlier inserts. **Discard changes** clears pending edits. Existing rows require a primary key; generated columns remain read-only.
+
+Open **Operation log** in the top toolbar to search commands, connection names, and databases, or filter by execution status. The database service retains the latest 1,000 user operations across restarts, including console and query commands, grid writes, SQL imports, and synchronization. Background metadata reads are excluded. Parameterized statements display their bound values alongside the SQL.
 
 ## Local storage and operating limits
 

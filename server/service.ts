@@ -18,6 +18,7 @@ import { compareRows } from "./compare.js";
 import { splitSql, stripComments, sqlLiteral } from "./sql-files.js";
 import { buildTableFilter } from "./table-filter.js";
 import { ConnectionStore } from "./store.js";
+import { OperationLogStore } from "./operation-log.js";
 import { normalizeRedisConnection } from "../shared/redis.js";
 import {
   redisClientOptions,
@@ -39,6 +40,9 @@ import type {
   TablePair,
   DatabaseSchemaComparison,
   DatabaseSyncPlan,
+  OperationLogEntry,
+  DatabaseDefinition,
+  DatabaseSettings,
 } from "../shared/types.js";
 
 interface Session {
@@ -56,6 +60,11 @@ interface SyncEntry {
   targetHash: string;
 }
 export class DatabaseService {
+  private operationLog: OperationLogStore;
+  private operationContext?: {
+    method: string;
+    commands: OperationLogEntry["commands"];
+  };
   private sessions = new Map<string, Session>();
   private transient = new Map<string, Connection>();
   private syncPlans = new Map<string, SyncEntry>();
@@ -66,7 +75,116 @@ export class DatabaseService {
   constructor(
     directory: string,
     private store = new ConnectionStore(directory),
-  ) {}
+  ) {
+    this.operationLog = new OperationLogStore(directory);
+  }
+  operationLogs() {
+    return this.operationLog.list();
+  }
+  async loggedOperation(
+    method: string,
+    args: unknown[],
+    action: () => Promise<unknown>,
+  ) {
+    const tracked = [
+      "query",
+      "updateRow",
+      "insertRow",
+      "deleteRow",
+      "importRows",
+      "importSql",
+      "renameObject",
+      "dropObject",
+      "dropDatabase",
+      "createDatabase",
+      "updateDatabase",
+      "applySync",
+      "applyDatabaseSync",
+    ];
+    if (!tracked.includes(method)) return action();
+    let session =
+      typeof args[0] === "string" ? this.sessions.get(args[0]) : undefined;
+    if (method === "applySync")
+      session = this.sessions.get(
+        this.syncPlans.get(String(args[0]))?.plan.targetId ?? "",
+      );
+    if (method === "applyDatabaseSync")
+      session = this.sessions.get(
+        this.databaseSyncPlans.get(String(args[0]))?.plan.target.connectionId ??
+          "",
+      );
+    const config = session ? { ...session.config } : undefined;
+    if (config && method === "applyDatabaseSync")
+      config.database =
+        this.databaseSyncPlans.get(String(args[0]))?.plan.target.database ??
+        config.database;
+    if (config?.engine === "mysql" && method === "applySync")
+      config.database =
+        this.syncPlans.get(String(args[0]))?.plan.targetObject.schema ??
+        config.database;
+    const context = { method, commands: [] as OperationLogEntry["commands"] };
+    this.operationContext = context;
+    const timestamp = new Date().toISOString();
+    const started = performance.now();
+    let failure: unknown;
+    let succeeded = false;
+    try {
+      const result = await action();
+      succeeded = true;
+      return result;
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      this.operationContext = undefined;
+      if (config) {
+        if (method === "query") context.commands = [{ text: String(args[1]) }];
+        if (!context.commands.length) {
+          const object = args[1] as DbObject | undefined;
+          if (config.engine === "redis" && method === "dropObject")
+            context.commands.push({
+              text: JSON.stringify(["DEL", object?.name]),
+            });
+          else if (config.engine === "redis" && method === "renameObject")
+            context.commands.push({
+              text: JSON.stringify(["RENAMENX", object?.name, args[2]]),
+            });
+          else if (config.engine === "redis" && method === "dropDatabase")
+            context.commands.push({ text: "FLUSHDB" });
+          else
+            context.commands.push({
+              text: `${method} ${JSON.stringify(args.slice(1))}`,
+            });
+        }
+        const entry: OperationLogEntry = {
+          id: randomUUID(),
+          operation: method,
+          connectionId: config.id,
+          connectionName: config.name,
+          database:
+            method === "createDatabase"
+              ? (args[1] as DatabaseDefinition).name
+              : ["dropDatabase", "updateDatabase"].includes(method)
+                ? String(args[1])
+                : config.database,
+          engine: config.engine,
+          timestamp,
+          elapsedMs: performance.now() - started,
+          success: succeeded,
+          error: succeeded
+            ? undefined
+            : failure instanceof Error
+              ? failure.message
+              : String(failure),
+          commands: context.commands,
+        };
+        // A log-storage failure must not turn a completed insert into a retryable write error.
+        await this.operationLog.append(entry).catch((error) => {
+          console.error("Unable to save database operation log", error);
+        });
+      }
+    }
+  }
   async connections() {
     return (await this.store.list()).map((c) => this.publicConnection(c));
   }
@@ -352,6 +470,18 @@ export class DatabaseService {
     params: unknown[] = [],
     rowLimit = 1000,
   ): Promise<QueryResult> {
+    const context = this.operationContext;
+    if (
+      context &&
+      context.method !== "query" &&
+      /^(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|TRUNCATE|BEGIN|COMMIT|ROLLBACK)\b/i.test(
+        stripComments(text).trim(),
+      )
+    )
+      context.commands.push({
+        text,
+        ...(params.length ? { parameters: params } : {}),
+      });
     const started = performance.now();
     let rows: Record<string, unknown>[] = [];
     let columns: string[] = [];
@@ -477,6 +607,181 @@ export class DatabaseService {
   }
   async databaseObjects(scope: DatabaseScope) {
     return this.inDatabase(scope, (id) => this.objects(id));
+  }
+  async databaseSettings(
+    id: string,
+    database?: string,
+  ): Promise<DatabaseSettings> {
+    const s = this.get(id);
+    if (s.config.engine === "mysql") {
+      const charsets = (
+        await this.sql(s, "SHOW CHARACTER SET", [], Infinity)
+      ).rows.map((row) => ({
+        name: String(row.Charset),
+        defaultCollation: String(row["Default collation"]),
+      }));
+      const collations = (
+        await this.sql(s, "SHOW COLLATION", [], Infinity)
+      ).rows.map((row) => ({
+        name: String(row.Collation),
+        charset: String(row.Charset),
+      }));
+      if (!database) return { charsets, collations };
+      const row = (
+        await this.sql(
+          s,
+          "SELECT DEFAULT_CHARACTER_SET_NAME AS charset, DEFAULT_COLLATION_NAME AS collation FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?",
+          [database],
+        )
+      ).rows[0];
+      if (!row) throw new Error("数据库不存在或无权访问");
+      return {
+        charsets,
+        collations,
+        charset: String(row.charset),
+        collation: String(row.collation),
+      };
+    }
+    if (s.config.engine === "postgres") {
+      if (!database) return { charsets: [], collations: [] };
+      const row = (
+        await this.sql(
+          s,
+          "SELECT pg_encoding_to_char(encoding) AS encoding FROM pg_database WHERE datname = $1",
+          [database],
+        )
+      ).rows[0];
+      if (!row) throw new Error("数据库不存在或无权访问");
+      return { charsets: [], collations: [], encoding: String(row.encoding) };
+    }
+    throw new Error("此数据库引擎不支持新建或修改数据库");
+  }
+  private validateDatabaseName(s: Session, name: string) {
+    if (!name.trim() || name.includes("\0"))
+      throw new Error("请输入有效的数据库名称");
+    if (s.config.engine === "mysql") {
+      if (
+        [...name].length > 64 ||
+        /[.\/\\]|\s$|[\u{10000}-\u{10ffff}]/u.test(name)
+      )
+        throw new Error(
+          "MySQL 数据库名称最多 64 个字符，不能包含点、斜杠、补充字符或以空白结尾",
+        );
+    } else if (s.config.engine === "postgres") {
+      if (Buffer.byteLength(name, "utf8") > 63)
+        throw new Error("PostgreSQL 数据库名称最多 63 个字节");
+    } else throw new Error("此数据库引擎不支持新建或修改数据库");
+  }
+  private async databaseOptions(id: string, definition: DatabaseDefinition) {
+    const s = this.get(id);
+    if (s.config.engine !== "mysql") {
+      if (definition.charset || definition.collation)
+        throw new Error("此数据库引擎不支持修改字符集或排序规则");
+      return "";
+    }
+    const { charset, collation } = definition;
+    if (!charset && !collation) return "";
+    const settings = await this.databaseSettings(id);
+    if (
+      charset &&
+      (!/^[a-zA-Z0-9_]+$/.test(charset) ||
+        !settings.charsets.some((item) => item.name === charset))
+    )
+      throw new Error("请选择服务器支持的字符集");
+    if (
+      collation &&
+      (!/^[a-zA-Z0-9_]+$/.test(collation) ||
+        !settings.collations.some(
+          (item) =>
+            item.name === collation && (!charset || item.charset === charset),
+        ))
+    )
+      throw new Error("请选择与字符集匹配的排序规则");
+    return `${charset ? ` CHARACTER SET ${charset}` : ""}${collation ? ` COLLATE ${collation}` : ""}`;
+  }
+  async createDatabase(id: string, definition: DatabaseDefinition) {
+    const s = this.get(id);
+    this.validateDatabaseName(s, definition.name);
+    const options = await this.databaseOptions(id, definition);
+    await this.sql(
+      s,
+      `CREATE DATABASE ${this.quote(s, definition.name)}${options}`,
+    );
+  }
+  async updateDatabase(
+    id: string,
+    database: string,
+    definition: DatabaseDefinition,
+  ) {
+    const s = this.get(id);
+    this.validateDatabaseName(s, database);
+    this.validateDatabaseName(s, definition.name);
+    const systemDatabases =
+      s.config.engine === "mysql"
+        ? ["mysql", "sys", "information_schema", "performance_schema"]
+        : ["postgres", "template0", "template1"];
+    if (systemDatabases.includes(database.toLowerCase()))
+      throw new Error("系统数据库不能修改");
+    const options = await this.databaseOptions(id, definition);
+    if (s.config.engine === "mysql") {
+      if (definition.name !== database)
+        throw new Error("MySQL 不支持直接重命名数据库");
+      if (!options) throw new Error("请选择字符集或排序规则");
+      await this.sql(s, `ALTER DATABASE ${this.quote(s, database)}${options}`);
+      return;
+    }
+    if (definition.name === database) return;
+    // PostgreSQL cannot rename the current database. Close our aliases first,
+    // and let the server reject active external clients without terminating them.
+    const maintenance = await this.open({
+      ...s.config,
+      id: randomUUID(),
+      database: "postgres",
+    });
+    const disconnected: { id: string; config: Connection }[] = [];
+    try {
+      for (const [sessionId, session] of this.sessions)
+        if (
+          session.config.engine === "postgres" &&
+          session.config.host === s.config.host &&
+          session.config.port === s.config.port &&
+          session.config.database === database
+        ) {
+          disconnected.push({ id: sessionId, config: session.config });
+          await this.disconnect(sessionId);
+        }
+      await this.sql(
+        maintenance,
+        `ALTER DATABASE ${this.quote(maintenance, database)} RENAME TO ${this.quote(maintenance, definition.name)}`,
+      );
+    } catch (error) {
+      for (const previous of disconnected) {
+        const restored = await this.open(previous.config).catch(
+          () => undefined,
+        );
+        if (restored) this.sessions.set(previous.id, restored);
+      }
+      throw error;
+    } finally {
+      await this.close(maintenance, false);
+    }
+    this.syncPlans.clear();
+    this.databaseSyncPlans.clear();
+    for (const config of await this.store.list())
+      if (
+        config.engine === "postgres" &&
+        config.host === s.config.host &&
+        config.port === s.config.port &&
+        config.database === database
+      ) {
+        await this.store.save({ ...config, database: definition.name });
+        const transient = this.transient.get(config.id);
+        if (transient)
+          this.transient.set(config.id, {
+            ...transient,
+            database: definition.name,
+          });
+      }
   }
   async dropDatabase(id: string, database: string) {
     const s = this.get(id);
@@ -686,7 +991,7 @@ export class DatabaseService {
       info.columns = (
         await this.sql(
           s,
-          "SELECT COLUMN_NAME AS name,COLUMN_TYPE AS type,IS_NULLABLE AS nullable,COLUMN_KEY AS pk,COLUMN_DEFAULT AS defaultValue FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION",
+          "SELECT COLUMN_NAME AS name,COLUMN_TYPE AS type,IS_NULLABLE AS nullable,COLUMN_KEY AS pk,COLUMN_DEFAULT AS defaultValue,GENERATION_EXPRESSION AS generationExpression FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION",
           [o.schema || s.config.database, o.name],
         )
       ).rows.map((c) => ({
@@ -812,24 +1117,38 @@ export class DatabaseService {
     if (s.config.engine === "redis") {
       const started = performance.now();
       const type = await s.client.type(o.name);
+      const limit = 1000;
       let value: unknown;
+      let length: number | undefined;
       if (type === "string") value = await s.client.get(o.name);
       else if (type === "hash") value = await s.client.hGetAll(o.name);
-      else if (type === "list")
-        value = await s.client.lRange(o.name, offset, offset + pageSize - 1);
-      else if (type === "set")
-        value = (await s.client.sScan(o.name, "0", { COUNT: pageSize }))
-          .members;
-      else if (type === "zset")
-        value = await s.client.zRangeWithScores(
-          o.name,
-          offset,
-          offset + pageSize - 1,
-        );
+      else if (type === "list") {
+        length = await s.client.lLen(o.name);
+        value = await s.client.lRange(o.name, 0, limit - 1);
+      } else if (type === "set") {
+        length = await s.client.sCard(o.name);
+        const members = new Set<string>();
+        let cursor = "0";
+        do {
+          const result = await s.client.sScan(o.name, cursor, {
+            COUNT: Math.min(limit, 200),
+          });
+          cursor = result.cursor;
+          result.members.forEach((member: string) => members.add(member));
+        } while (cursor !== "0" && members.size < limit);
+        value = [...members].slice(0, limit);
+      } else if (type === "zset") {
+        length = await s.client.zCard(o.name);
+        value = await s.client.zRangeWithScores(o.name, 0, limit - 1);
+      } else if (type === "none") value = null;
       else value = `${type}：请使用命令编辑器查询`;
       return {
         columns: ["key", "type", "ttl", "value"],
-        rows: [{ key: o.name, type, ttl: await s.client.ttl(o.name), value }],
+        rows: [
+          { key: o.name, type, ttl: await s.client.ttl(o.name), value, length },
+        ],
+        truncated:
+          length !== undefined && Array.isArray(value) && value.length < length,
         total: 1,
         page: 1,
         pageSize,
@@ -882,6 +1201,7 @@ export class DatabaseService {
     );
     return {
       ...result,
+      columns: result.columns.length ? result.columns : names,
       total: Number(count.rows[0]?.total ?? 0),
       page,
       pageSize,
@@ -1019,6 +1339,7 @@ export class DatabaseService {
     o: DbObject,
     values: Record<string, unknown>,
     key?: Record<string, unknown>,
+    allowEmpty = false,
   ) {
     const s = this.get(id);
     if (
@@ -1031,7 +1352,7 @@ export class DatabaseService {
     const info = await this.schema(id, o);
     const names = info.columns.map((c) => c.name);
     if (
-      !Object.keys(values).length ||
+      (!allowEmpty && !Object.keys(values).length) ||
       Object.keys(values).some((c) => !names.includes(c))
     )
       throw new Error("字段无效或没有提供字段");
@@ -1082,7 +1403,7 @@ export class DatabaseService {
     await this.persist(s);
   }
   async insertRow(id: string, o: DbObject, values: Record<string, unknown>) {
-    const s = await this.writable(id, o, values);
+    const s = await this.writable(id, o, values, undefined, true);
     await this.insert(s, o, values);
     await this.persist(s);
   }
@@ -1091,6 +1412,13 @@ export class DatabaseService {
     o: DbObject,
     values: Record<string, unknown>,
   ) {
+    if (!Object.keys(values).length) {
+      await this.sql(
+        s,
+        `INSERT INTO ${this.tableName(s, o)} ${s.config.engine === "mysql" ? "() VALUES ()" : "DEFAULT VALUES"}`,
+      );
+      return;
+    }
     await this.sql(
       s,
       `INSERT INTO ${this.tableName(s, o)} (${Object.keys(values)

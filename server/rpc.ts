@@ -29,12 +29,20 @@ const object = z.object({
 });
 const record = z.record(z.string(), z.unknown());
 const database = z.string().min(1).max(500);
+const databaseDefinition = z
+  .object({
+    name: database,
+    charset: z.string().min(1).max(100).optional(),
+    collation: z.string().min(1).max(100).optional(),
+  })
+  .strict();
 const scope = z.object({ connectionId: id, database }).strict();
 const tablePairs = z
   .array(z.object({ source: object, target: object }).strict())
   .min(1)
   .max(500);
 const definitions = {
+  operationLogs: z.tuple([]),
   connections: z.tuple([]),
   saveConnection: z.tuple([connection]),
   removeConnection: z.tuple([id]),
@@ -43,6 +51,12 @@ const definitions = {
   test: z.tuple([connection]),
   databases: z.tuple([id]),
   selectDatabase: z.tuple([id, z.string().min(1).max(500)]),
+  databaseSettings: z.tuple([
+    id,
+    database.nullish().transform((v) => v ?? undefined),
+  ]),
+  createDatabase: z.tuple([id, databaseDefinition]),
+  updateDatabase: z.tuple([id, database, databaseDefinition]),
   dropDatabase: z.tuple([id, database]),
   databaseObjects: z.tuple([scope]),
   objects: z.tuple([id]),
@@ -114,7 +128,11 @@ export function createDispatcher(service: DatabaseService) {
     const previous = queues.get(key) ?? Promise.resolve();
     const next = previous
       .catch(() => {})
-      .then(() => Reflect.apply((service as any)[method], service, parsed));
+      .then(() =>
+        service.loggedOperation(method, parsed, () =>
+          Reflect.apply((service as any)[method], service, parsed),
+        ),
+      );
     queues.set(key, next);
     try {
       return await next;

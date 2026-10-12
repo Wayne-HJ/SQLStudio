@@ -1,15 +1,8 @@
 import { t } from "../i18n";
 import {
-  ArrowDownToLine,
-  ArrowRightLeft,
-  ArrowUpFromLine,
   Archive,
   BarChart3,
-  BookOpen,
-  ChevronDown,
-  Database,
   FileCode2,
-  GitCompareArrows,
   GitBranch,
   History,
   Layers,
@@ -17,22 +10,15 @@ import {
   PanelRight,
   PlugZap,
   Plus,
-  RefreshCw,
-  Settings2,
   Table2,
-  UserRound,
-  Wrench,
+  Terminal,
 } from "lucide-react";
 export default function DesktopToolbar({
   active,
   onNavigate,
   onConnection,
   onBackup,
-  onImport,
-  onExport,
   onInspector,
-  onImportSql,
-  onExportSql,
   connected,
   sqlite,
 }: {
@@ -40,11 +26,7 @@ export default function DesktopToolbar({
   onNavigate: (route: string) => void;
   onConnection: () => void;
   onBackup: () => void;
-  onImport: () => void;
-  onExport: () => void;
   onInspector: () => void;
-  onImportSql: () => void;
-  onExportSql: () => void;
   connected: boolean;
   sqlite: boolean;
 }) {
@@ -83,6 +65,21 @@ export default function DesktopToolbar({
           false,
           !connected,
         )}
+        {item(
+          t("命令行"),
+          <Terminal size={29} />,
+          "#58a98a",
+          () => onNavigate("console"),
+          active === "console",
+          !connected,
+        )}
+        {item(
+          t("操作日志"),
+          <History size={29} />,
+          "#9b82b8",
+          () => onNavigate("operations"),
+          active === "operations",
+        )}
       </div>
       <div className="desktop-tool-group">
         {item(
@@ -106,13 +103,6 @@ export default function DesktopToolbar({
           () => {},
           false,
           true,
-        )}
-        {item(
-          t("其它"),
-          <Wrench size={30} />,
-          "#478fab",
-          () => onNavigate("structure"),
-          active === "structure",
         )}
       </div>
       <div className="desktop-tool-group">
@@ -148,41 +138,7 @@ export default function DesktopToolbar({
         )}
         {item("BI", <BarChart3 size={31} />, "#b44cdb", () => {}, false, true)}
       </div>
-      <div className="desktop-tool-group sync-tool-group">
-        {item(
-          t("结构比对"),
-          <GitCompareArrows size={29} />,
-          "#6681c8",
-          () => onNavigate("structure"),
-          active === "structure",
-        )}
-        {item(
-          t("数据同步"),
-          <ArrowRightLeft size={29} />,
-          "#58a98a",
-          () => onNavigate("sync"),
-          active === "sync",
-        )}
-      </div>
       <div className="desktop-toolbar-spacer" />
-      <div className="desktop-tool-group sql-file-tool-group">
-        {item(
-          t("导入 SQL"),
-          <ArrowUpFromLine size={27} />,
-          "#75a99b",
-          onImportSql,
-          false,
-          !connected,
-        )}
-        {item(
-          t("导出 SQL"),
-          <ArrowDownToLine size={27} />,
-          "#7198bb",
-          onExportSql,
-          false,
-          !connected,
-        )}
-      </div>
       <div className="desktop-view-tools">
         <div>
           <button title={t("连接导航栏")} onClick={() => onNavigate("objects")}>

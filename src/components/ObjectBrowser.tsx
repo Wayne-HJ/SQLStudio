@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import type { Connection, DbObject, TableInfo } from "../../shared/types";
+import RedisBrowser from "./RedisBrowser";
 export default function ObjectBrowser({
   connection,
   objects,
@@ -24,6 +25,7 @@ export default function ObjectBrowser({
   onNew,
   onRefresh,
   inspector,
+  onCommand,
 }: {
   connection: Connection;
   objects: DbObject[];
@@ -33,6 +35,7 @@ export default function ObjectBrowser({
   onNew: () => void;
   onRefresh: () => void;
   inspector: boolean;
+  onCommand: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<DbObject | null>(null);
@@ -69,6 +72,17 @@ export default function ObjectBrowser({
       mounted = false;
     };
   }, [selected, connection.id, inspector]);
+  if (connection.engine === "redis")
+    return (
+      <RedisBrowser
+        key={`${connection.id}/${connection.database}`}
+        connection={connection}
+        objects={objects}
+        onOpen={onOpen}
+        onRefresh={onRefresh}
+        onCommand={onCommand}
+      />
+    );
   return (
     <div className="object-browser">
       <div className="object-list-toolbar">
@@ -266,9 +280,7 @@ export default function ObjectBrowser({
             ? t("视图")
             : connection.engine === "mongodb"
               ? t("集合")
-              : connection.engine === "redis"
-                ? t("键")
-                : t("表"),
+              : t("表"),
         ])}{" "}
         <span>{selected ? selected.name : t("双击对象打开")}</span>
       </div>
