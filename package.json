@@ -1,6 +1,6 @@
 {
   "name": "sqlstudio",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -9,6 +9,8 @@
     "build": "tsc --noEmit && vite build && npm run build:electron",
     "test": "tsx --test tests/*.test.ts",
     "check": "tsc --noEmit",
+    "pack:all": "npm run build && electron-builder --mac --win --publish never",
+    "pack:all:local": "npm run build && electron-builder --mac --win --publish never -c.mac.identity=-",
     "pack:mac": "npm run build && electron-builder --mac",
     "pack:mac:local": "npm run build && electron-builder --mac -c.mac.identity=-",
     "pack:win": "npm run build && electron-builder --win",

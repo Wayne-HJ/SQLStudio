@@ -16,6 +16,7 @@ import {
 import { api } from "../api";
 import type { Connection, DbObject, TableInfo } from "../../shared/types";
 import RedisBrowser from "./RedisBrowser";
+import { matchesObjectSearch } from "../../shared/object-search";
 export default function ObjectBrowser({
   connection,
   objects,
@@ -26,6 +27,8 @@ export default function ObjectBrowser({
   onRefresh,
   inspector,
   onCommand,
+  search,
+  onSearchChange,
 }: {
   connection: Connection;
   objects: DbObject[];
@@ -36,8 +39,9 @@ export default function ObjectBrowser({
   onRefresh: () => void;
   inspector: boolean;
   onCommand: () => void;
+  search: string;
+  onSearchChange: (search: string) => void;
 }) {
-  const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<DbObject | null>(null);
   const [grid, setGrid] = useState(false);
   const [info, setInfo] = useState<TableInfo | null>(null);
@@ -45,7 +49,7 @@ export default function ObjectBrowser({
   const list = objects.filter(
     (o) =>
       (views ? o.type === "view" : o.type !== "view") &&
-      `${o.schema ?? ""}${o.name}`.toLowerCase().includes(search.toLowerCase()),
+      matchesObjectSearch(o, search),
   );
   useEffect(() => {
     setSelected(null);
@@ -142,7 +146,7 @@ export default function ObjectBrowser({
             <Search size={17} />
             <input
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => onSearchChange(e.target.value)}
               placeholder={t("搜索")}
               aria-label={t("搜索对象列表")}
             />

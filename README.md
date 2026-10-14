@@ -149,6 +149,10 @@ Subscription, transaction, connection-control, and full-database clearing comman
 
 Click any editable relational field and type its new value. **Add record** appends a blank row directly to the grid. Leave a new field at **Default value** to use its database default or generated value; choose **NULL** explicitly or enter an empty string. Click **Save** to write pending rows immediately. Errors appear in a dialog and failed rows retain their inputs. Each successful row is removed from the pending set, so retrying after a later failure does not duplicate earlier inserts. **Discard changes** clears pending edits. Existing rows require a primary key; generated columns remain read-only.
 
+Right-click a data row to **Copy rows**, **Copy as INSERT statements**, or **Copy as UPDATE statements**. Right-clicking a selected row copies all selected rows; otherwise it uses the clicked row. UPDATE statements use the original primary key, including composite keys. Click row numbers to select rows (Shift for a range, Ctrl / ⌘ for multiple rows). With the grid focused, Ctrl / ⌘ + C copies selected rows and Ctrl / ⌘ + V pastes them as new pending records. **Paste as new rows** is also available in the grid's context menu, including an empty table. Review pasted values and adjust duplicate primary or unique keys before saving. SQL NULL, empty strings, multiline text, and default values remain distinct. Text from spreadsheets can be pasted as tab-separated rows in the table's column order, optionally with column headers.
+
+The sidebar and object-list search boxes share their search text. Search matches any part of an object name without regard to case, trims surrounding whitespace, and accepts schema-qualified names such as `public.orders`. Matching nodes expand while searching; clearing the search restores the previous collapsed state. Searches cover the objects loaded for the selected database.
+
 Open **Operation log** in the top toolbar to search commands, connection names, and databases, or filter by execution status. The database service retains the latest 1,000 user operations across restarts, including console and query commands, grid writes, SQL imports, and synchronization. Background metadata reads are excluded. Parameterized statements display their bound values alongside the SQL.
 
 ## Local storage and operating limits
@@ -193,7 +197,33 @@ npm run build
 
 Tests use isolated temporary SQLite files and cover queries, pagination, filtering, primary-key checks, import rollback, persistence, backups, schema comparison, synchronization, rejection of concurrent changes, and failure rollback. Localization tests cover fallback behavior, parameter preservation, message translation, and placeholder consistency. Integration testing for the other drivers requires actual database instances.
 
+### Application version
+
+`package.json`'s `version` is the single source for the interface, Electron's About panel, and installers. To increment the patch version and synchronize `package-lock.json`, run:
+
+```bash
+npm version patch --no-git-tag-version
+```
+
+Use `minor`, `major`, or an explicit version instead of `patch` when needed, then rebuild or repackage the app. The fixed seed in `scripts/mac-identity.mjs` preserves macOS network permissions and stays unchanged during application version updates.
+
 ### Desktop packaging
+
+On macOS, build the macOS and Windows installers together with one command:
+
+```bash
+npm run pack:all
+```
+
+This builds the app once, then produces macOS DMGs for Apple Silicon (`arm64`) and Intel (`x64`), plus a Windows NSIS installer (`x64`), in `release/`. It does not publish the installers. These combined commands require a macOS host; packaging tools and Electron binaries are downloaded as needed on the first run.
+
+For local testing without an Apple signing certificate, use ad-hoc signing for the macOS apps while also building the Windows installer:
+
+```bash
+npm run pack:all:local
+```
+
+To build only one platform:
 
 ```bash
 npm run pack:mac       # macOS DMG: Apple Silicon (arm64) and Intel (x64)

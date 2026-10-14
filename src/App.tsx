@@ -1,4 +1,5 @@
 import { t } from "./i18n";
+import { version as appVersion } from "../package.json";
 import {
   useCallback,
   useEffect,
@@ -81,6 +82,7 @@ import DatabaseConsole from "./components/DatabaseConsole";
 import DatabaseDialog from "./components/DatabaseDialog";
 import OperationLogView from "./components/OperationLogView";
 import { useTableEditing } from "./hooks/useTableEditing";
+import { matchesObjectSearch } from "../shared/object-search";
 import { getLanguage, setLanguage, useLanguage } from "./i18n";
 import type {
   Connection,
@@ -271,6 +273,7 @@ export default function App() {
     return list;
   }
   const isTreeNodeExpanded = (id: string, database?: string, group?: string) =>
+    !!search.trim() ||
     !collapsedTreeNodes.has(treeNodeKey(id, database, group));
   function toggleTreeNode(id: string, database?: string, group?: string) {
     const key = treeNodeKey(id, database, group);
@@ -1217,9 +1220,7 @@ export default function App() {
     ["sqlite", "mysql", "postgres"].includes(connection?.engine ?? "");
   const hasPrimary = info.columns.some((c) => c.primaryKey);
   const rowsCount = route === "query" ? queryResult.rows.length : data.total;
-  const filteredObjects = objects.filter((o) =>
-    `${o.schema ?? ""}${o.name}`.toLowerCase().includes(search.toLowerCase()),
-  );
+  const filteredObjects = objects.filter((o) => matchesObjectSearch(o, search));
   const tables = filteredObjects.filter((o) => o.type !== "view");
   const views = filteredObjects.filter((o) => o.type === "view");
   const currentName =
@@ -1299,6 +1300,7 @@ export default function App() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t("搜索连接或对象…")}
+              aria-label={t("搜索连接或对象…")}
             />
             <span>⌘ K</span>
           </div>
@@ -1315,8 +1317,8 @@ export default function App() {
               .filter(
                 (c) =>
                   c.id === activeId ||
-                  c.name.toLowerCase().includes(search.toLowerCase()) ||
-                  !search,
+                  c.name.toLowerCase().includes(search.trim().toLowerCase()) ||
+                  !search.trim(),
               )
               .map((c) => (
                 <div key={c.id} className="connection-group">
@@ -1573,9 +1575,11 @@ export default function App() {
                                         ))}
                                     </>
                                   )}
-                                  {!objects.length && (
+                                  {!filteredObjects.length && (
                                     <p className="tree-empty">
-                                      {t("暂无数据库对象")}
+                                      {search.trim()
+                                        ? t("没有匹配的对象")
+                                        : t("暂无数据库对象")}
                                     </p>
                                   )}
                                 </>
@@ -1627,7 +1631,7 @@ export default function App() {
             <div className="sidebar-footer">
               <span className="online-dot" />
               <AppIcon size={18} />
-              SQLStudio <span>v0.1.4</span>
+              SQLStudio <span>v{appVersion}</span>
             </div>
           </div>
         </aside>
@@ -1840,6 +1844,8 @@ export default function App() {
               <ObjectBrowser
                 connection={connection}
                 objects={objects}
+                search={search}
+                onSearchChange={setSearch}
                 views={route === "views"}
                 onOpen={openObject}
                 onDesign={(o) => {
@@ -2193,11 +2199,21 @@ export default function App() {
                     <div className="table-with-inspector">
                       <div className="table-area">
                         <DataGrid
+                          key={JSON.stringify([
+                            activeId,
+                            activeDatabase,
+                            objectKey(object),
+                          ])}
                           result={writable ? tableEditing.result : data}
                           columns={info.columns}
                           selected={selected}
                           onSelect={setSelected}
                           editing={writable ? tableEditing.grid : undefined}
+                          clipboard={
+                            connection
+                              ? { engine: connection.engine, object, notify }
+                              : undefined
+                          }
                           sort={sort}
                           direction={direction}
                           onSort={(column) => {
@@ -2585,6 +2601,11 @@ export default function App() {
                   <DataGrid
                     result={queryResult}
                     selected={querySelected}
+                    clipboard={
+                      connection
+                        ? { engine: connection.engine, notify }
+                        : undefined
+                    }
                     onSelect={setQuerySelected}
                   />
                 )}
@@ -2827,7 +2848,7 @@ export default function App() {
               </span>
               <span>UTF-8</span>
               <span className="status-separator" />
-              <span>SQLStudio 0.1.4</span>
+              <span>SQLStudio {appVersion}</span>
             </div>
           </footer>
         </main>
@@ -2981,7 +3002,7 @@ export default function App() {
                   </span>
                   <div>
                     <h3>SQLStudio</h3>
-                    <span>{t("跨平台数据库工作空间 · 0.1.4")}</span>
+                    <span>{t("跨平台数据库工作空间 · {0}", [appVersion])}</span>
                   </div>
                 </div>
                 <div className="settings-language">

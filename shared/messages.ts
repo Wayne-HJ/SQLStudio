@@ -279,7 +279,7 @@ export const englishMessages: Record<string, string> = {
     "Omit fields with default or generated values. Saving writes to the database immediately.",
   新对象名称: "New object name",
   查询名称: "Query name",
-  "跨平台数据库工作空间 · 0.1.4": "Cross-platform database workspace · 0.1.4",
+  "跨平台数据库工作空间 · {0}": "Cross-platform database workspace · {0}",
   运行模式: "Runtime",
   "Electron 桌面端": "Electron desktop",
   浏览器开发预览: "Browser development preview",
@@ -753,4 +753,21 @@ export const englishMessages: Record<string, string> = {
   绑定参数: "Bound parameters",
   暂无操作日志: "No operations yet",
   请等待数据保存完成: "Wait for data saving to finish",
+  复制整行: "Copy rows",
+  "复制为 INSERT 语句": "Copy as INSERT statements",
+  "复制为 UPDATE 语句": "Copy as UPDATE statements",
+  粘贴为新行: "Paste as new rows",
+  "已复制 {0} 行": "Copied {0} rows",
+  "已粘贴 {0} 行，请检查后保存": "Pasted {0} rows. Review them before saving",
+  剪贴板中的行数据格式无效: "Invalid clipboard row data",
+  剪贴板中没有行数据: "No row data in the clipboard",
+  粘贴数据的列数与当前表不匹配:
+    "The pasted column count does not match this table",
+  粘贴数据没有与当前表匹配的可写字段:
+    "The pasted data has no matching writable fields",
+  "复制 SQL 适用于关系型数据表": "Copy SQL is available for relational tables",
+  "复制 UPDATE 需要已有记录和完整主键":
+    "Copy UPDATE requires existing records with complete primary keys",
+  当前记录没有可更新字段: "This record has no writable fields",
+  没有匹配的对象: "No matching objects",
 };

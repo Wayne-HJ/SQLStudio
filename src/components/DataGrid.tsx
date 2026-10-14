@@ -1,5 +1,5 @@
 import { t } from "../i18n";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -11,9 +11,24 @@ import {
   Calendar,
   Check,
   X,
+  Copy,
+  ClipboardPaste,
+  FileCode2,
 } from "lucide-react";
-import type { Column, QueryResult } from "../../shared/types";
+import type { Column, DbObject, Engine, QueryResult } from "../../shared/types";
 import type { CellDraft } from "../../shared/table-editing";
+import {
+  rowsSql,
+  type ClipboardRow,
+  type ClipboardRows,
+} from "../../shared/row-clipboard";
+import {
+  readRowsClipboard,
+  readRowsContent,
+  rowClipboardContent,
+  writeRowsClipboard,
+} from "../row-clipboard";
+import ContextMenu, { type MenuItem } from "./ContextMenu";
 export interface GridEditing {
   editable: (row: number, column: string) => boolean;
   cell: (row: number, column: string) => CellDraft;
@@ -21,6 +36,8 @@ export interface GridEditing {
   changed: (row: number, column: string) => boolean;
   isNew: (row: number) => boolean;
   remove: (row: number) => void;
+  row: (row: number) => ClipboardRow;
+  paste: (rows: ClipboardRows) => number;
 }
 export const valueText = (value: unknown) =>
   value === null
@@ -49,6 +66,7 @@ export default function DataGrid({
   direction,
   onSort,
   busy,
+  clipboard,
 }: {
   result: QueryResult;
   columns?: Column[];
@@ -59,8 +77,131 @@ export default function DataGrid({
   direction?: string;
   onSort?: (column: string) => void;
   busy?: boolean;
+  clipboard?: {
+    engine: Engine;
+    object?: DbObject;
+    notify: (text: string, error?: boolean) => void;
+  };
 }) {
   const scroll = useRef<HTMLDivElement>(null);
+  const anchor = useRef<number>(0);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    rows: number[];
+  } | null>(null);
+  const textInput = (target: EventTarget | null) =>
+    target instanceof HTMLElement &&
+    !!target.closest(
+      'input:not([type="checkbox"]), textarea, select, [contenteditable="true"]',
+    );
+  const reportError = (error: unknown) =>
+    clipboard?.notify((error as Error).message, true);
+  const snapshots = (indices: number[]) =>
+    [...new Set(indices)]
+      .sort((a, b) => a - b)
+      .map(
+        (index) =>
+          editing?.row(index) ?? {
+            values: result.rows[index],
+            original: result.rows[index],
+          },
+      );
+  const copiedRows = (indices: number[]): ClipboardRows => ({
+    version: 1,
+    columns: result.columns,
+    rows: snapshots(indices).map((row) => row.values),
+  });
+  const copied = (count: number) =>
+    clipboard?.notify(t("已复制 {0} 行", [count]));
+  async function copyRows(indices: number[], mode?: "insert" | "update") {
+    try {
+      if (mode && clipboard?.object) {
+        await navigator.clipboard.writeText(
+          rowsSql(
+            clipboard.engine,
+            clipboard.object,
+            columns,
+            snapshots(indices),
+            mode,
+          ),
+        );
+      } else await writeRowsClipboard(copiedRows(indices));
+      copied(indices.length);
+    } catch (error) {
+      reportError(error);
+    }
+  }
+  function pasteRows(rows: ClipboardRows) {
+    if (!editing || busy) return;
+    const count = editing.paste(rows);
+    if (count) clipboard?.notify(t("已粘贴 {0} 行，请检查后保存", [count]));
+  }
+  async function pasteClipboard() {
+    try {
+      pasteRows(await readRowsClipboard(result.columns));
+    } catch (error) {
+      reportError(error);
+    }
+  }
+  const openMenu = (event: React.MouseEvent, index?: number) => {
+    if (
+      !clipboard ||
+      busy ||
+      (event.target instanceof Element &&
+        event.target.closest(".context-menu-shield"))
+    )
+      return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rows =
+      index === undefined
+        ? selected
+        : selected.includes(index)
+          ? selected
+          : [index];
+    if (index !== undefined && !selected.includes(index))
+      onSelect(editing?.isNew(index) ? [] : [index]);
+    setMenu({ x: event.clientX, y: event.clientY, rows });
+  };
+  const menuItems: MenuItem[] = [
+    {
+      label: "复制整行",
+      icon: <Copy size={14} />,
+      disabled: !menu?.rows.length,
+      action: () => void copyRows(menu!.rows),
+    },
+    ...(clipboard?.object &&
+    ["mysql", "postgres", "sqlite"].includes(clipboard.engine)
+      ? [
+          {
+            label: "复制为 INSERT 语句",
+            icon: <FileCode2 size={14} />,
+            disabled: !menu?.rows.length,
+            action: () => void copyRows(menu!.rows, "insert"),
+          },
+          {
+            label: "复制为 UPDATE 语句",
+            icon: <FileCode2 size={14} />,
+            disabled:
+              !menu?.rows.length ||
+              !columns.some((c) => c.primaryKey) ||
+              menu.rows.some((i) => editing?.isNew(i)),
+            action: () => void copyRows(menu!.rows, "update"),
+          },
+        ]
+      : []),
+    ...(editing
+      ? [
+          {
+            label: "粘贴为新行",
+            icon: <ClipboardPaste size={14} />,
+            separator: true,
+            action: () => void pasteClipboard(),
+          },
+        ]
+      : []),
+  ];
   const newCount = result.rows.filter((_, i) => editing?.isNew(i)).length;
   const previousNewCount = useRef(0);
   useEffect(() => {
@@ -75,7 +216,53 @@ export default function DataGrid({
     .map((_, i) => i)
     .filter((i) => !editing?.isNew(i));
   return (
-    <div ref={scroll} className={`grid-scroll ${busy ? "grid-busy" : ""}`}>
+    <div
+      ref={scroll}
+      className={`grid-scroll ${busy ? "grid-busy" : ""}`}
+      tabIndex={clipboard ? 0 : undefined}
+      aria-label={t("数据表")}
+      onContextMenu={(event) => openMenu(event)}
+      onCopy={(event) => {
+        if (!clipboard || busy || textInput(event.target) || !selected.length)
+          return;
+        event.preventDefault();
+        try {
+          const content = rowClipboardContent(copiedRows(selected));
+          event.clipboardData.setData("text/plain", content.text);
+          event.clipboardData.setData("text/html", content.html);
+          copied(selected.length);
+        } catch (error) {
+          reportError(error);
+        }
+      }}
+      onPaste={(event) => {
+        if (!editing || busy || textInput(event.target)) return;
+        event.preventDefault();
+        try {
+          pasteRows(
+            readRowsContent(
+              event.clipboardData.getData("text/plain"),
+              event.clipboardData.getData("text/html"),
+              result.columns,
+            ),
+          );
+        } catch (error) {
+          reportError(error);
+        }
+      }}
+      onKeyDown={(event) => {
+        if (
+          clipboard &&
+          !busy &&
+          !textInput(event.target) &&
+          (event.ctrlKey || event.metaKey) &&
+          event.key.toLowerCase() === "a"
+        ) {
+          event.preventDefault();
+          onSelect(selectable);
+        }
+      }}
+    >
       <table className="data-grid">
         <thead>
           <tr>
@@ -122,6 +309,7 @@ export default function DataGrid({
             <tr
               key={i}
               className={`${selected.includes(i) ? "selected" : ""} ${editing?.isNew(i) ? "draft-row" : ""}`}
+              onContextMenu={(event) => openMenu(event, i)}
             >
               <td className="checkbox-cell">
                 {editing?.isNew(i) ? (
@@ -148,7 +336,33 @@ export default function DataGrid({
                   />
                 )}
               </td>
-              <td className="row-number">{editing?.isNew(i) ? "+" : i + 1}</td>
+              <td
+                className="row-number"
+                onClick={(event) => {
+                  if (busy || editing?.isNew(i)) return;
+                  scroll.current?.focus();
+                  if (event.shiftKey) {
+                    const from = Math.min(anchor.current, i);
+                    const to = Math.max(anchor.current, i);
+                    onSelect(
+                      selectable.filter(
+                        (index) => index >= from && index <= to,
+                      ),
+                    );
+                  } else {
+                    onSelect(
+                      event.ctrlKey || event.metaKey
+                        ? selected.includes(i)
+                          ? selected.filter((index) => index !== i)
+                          : [...selected, i]
+                        : [i],
+                    );
+                    anchor.current = i;
+                  }
+                }}
+              >
+                {editing?.isNew(i) ? "+" : i + 1}
+              </td>
               {result.columns.map((name) => (
                 <td
                   key={name}
@@ -205,6 +419,17 @@ export default function DataGrid({
               : t("执行查询后，结果将显示在这里。")}
           </p>
         </div>
+      )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems}
+          onClose={() => {
+            setMenu(null);
+            scroll.current?.focus();
+          }}
+        />
       )}
     </div>
   );

@@ -9,6 +9,7 @@ import {
   type RowDraft,
 } from "../../shared/table-editing";
 import { t } from "../i18n";
+import { pastedDrafts, type ClipboardRows } from "../../shared/row-clipboard";
 
 export function useTableEditing({
   scope,
@@ -146,6 +147,20 @@ export function useTableEditing({
     },
     result: { ...data, rows: [...data.rows, ...newRows.map(() => ({}))] },
     grid: {
+      row: (index: number) => ({
+        original: data.rows[index],
+        values: {
+          ...data.rows[index],
+          ...draftValues(findDraft(index) ?? { id: "", cells: {} }, columns),
+        },
+      }),
+      paste: (rows: ClipboardRows) => {
+        if (!writable || savingRef.current || currentScope.current !== scope)
+          return 0;
+        const added = pastedDrafts(rows, columns);
+        setDrafts((previous) => [...previous, ...added]);
+        return added.length;
+      },
       editable,
       cell: (index: number, name: string) =>
         findDraft(index)?.cells[name] ?? cellDraft(data.rows[index]?.[name]),

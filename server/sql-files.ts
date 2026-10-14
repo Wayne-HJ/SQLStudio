@@ -112,25 +112,4 @@ export function stripComments(text: string) {
     .replace(/^\s*(?:(?:--[^\n]*(?:\n|$))|(?:\/\*[\s\S]*?\*\/))*/, "")
     .trim();
 }
-export function sqlLiteral(value: unknown, engine: string): string {
-  if (value == null) return "NULL";
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("不能导出非有限数值");
-    return String(value);
-  }
-  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-    const hex = Buffer.from(value).toString("hex");
-    return engine === "postgres" ? `decode('${hex}','hex')` : `X'${hex}'`;
-  }
-  const text =
-    value instanceof Date
-      ? value.toISOString()
-      : typeof value === "object"
-        ? JSON.stringify(value)
-        : String(value);
-  // MySQL escape behavior may vary with sql_mode; hexadecimal avoids ambiguity.
-  if (engine === "mysql")
-    return `CONVERT(X'${Buffer.from(text).toString("hex")}' USING utf8mb4)`;
-  return `'${text.replaceAll("'", "''")}'`;
-}
+export { sqlLiteral } from "../shared/sql-literal.js";
